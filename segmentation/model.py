@@ -2,7 +2,7 @@ from __future__ import annotations
 
 """浅层 DINOv3 分割模型定义。
 
-这里实现的是一个面向小中规模 tif 分割任务的轻量结构：
+这里实现的是一个面向固定 512x512 PNG 分割任务的轻量结构：
 1. 用 DINOv3 backbone 提取浅层 ViT 特征。
 2. 用一个小型 CNN 细节分支补偿边缘和纹理信息。
 3. 用逐级上采样解码器恢复到像素级输出。
@@ -226,10 +226,15 @@ class ShallowDinoSegmentor(nn.Module):
         detail_dims: Sequence[int] = (64, 128, 256),
         dropout: float = 0.1,
         freeze_backbone: bool = True,
+        input_size: Sequence[int] = (512, 512),
     ):
         super().__init__()
-        # patch_size 决定了 backbone 对输入尺寸的整除要求。
         self.patch_size = int(backbone.patch_size)
+        self.input_size = tuple(int(value) for value in input_size)
+        if len(self.input_size) != 2:
+            raise ValueError(f"Expected 2D input size, got {self.input_size}")
+        if any(size % self.patch_size != 0 for size in self.input_size):
+            raise ValueError(f"Input size {self.input_size} must be divisible by patch size {self.patch_size}")
         self.layer_indices = list(layer_indices)
         self.freeze_backbone = freeze_backbone
         self.extractor = DINOv3ShallowFeatureExtractor(backbone, layer_indices, freeze_backbone=freeze_backbone)
@@ -253,21 +258,9 @@ class ShallowDinoSegmentor(nn.Module):
             self.extractor.backbone.eval()
         return self
 
-    def _pad_to_patch_multiple(self, x: torch.Tensor) -> tuple[torch.Tensor, tuple[int, int]]:
-        # ViT patch embedding 更适合处理 patch_size 的整数倍输入。
-        # 这里先反射填充到最近倍数，最后再裁回原图大小。
-        height, width = x.shape[-2:]
-        pad_h = (self.patch_size - height % self.patch_size) % self.patch_size
-        pad_w = (self.patch_size - width % self.patch_size) % self.patch_size
-        if pad_h == 0 and pad_w == 0:
-            return x, (height, width)
-        x = F.pad(x, (0, pad_w, 0, pad_h), mode="reflect")
-        return x, (height, width)
-
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # 数据流：
-        # 原图 -> 尺寸补齐 -> 细节分支 / DINOv3 浅层特征 -> 多级解码 -> 恢复原尺寸。
-        x, original_size = self._pad_to_patch_multiple(x)
+        if tuple(x.shape[-2:]) != self.input_size:
+            raise ValueError(f"Expected input size {self.input_size}, got {tuple(x.shape[-2:])}")
         detail2, detail4, detail8 = self.detail_stem(x)
         shallow_features = self.extractor(x)
         fused = self.shallow_fusion(shallow_features)
@@ -275,9 +268,7 @@ class ShallowDinoSegmentor(nn.Module):
         decoded = self.decode4(decoded, detail4)
         decoded = self.decode2(decoded, detail2)
         decoded = self.decode1(decoded)
-        logits = self.head(decoded)
-        logits = F.interpolate(logits, size=x.shape[-2:], mode="bilinear", align_corners=False)
-        return logits[..., : original_size[0], : original_size[1]]
+        return self.head(decoded)
 
 
 def build_dinov3_backbone(backbone_name: str, backbone_weights: str | None = None, pretrained: bool = True) -> nn.Module:
@@ -301,6 +292,7 @@ def build_shallow_dinov3_segmentor(
     detail_dims: Sequence[int] = (64, 128, 256),
     dropout: float = 0.1,
     freeze_backbone: bool = True,
+    input_size: Sequence[int] = (512, 512),
 ) -> ShallowDinoSegmentor:
     """构建完整的浅层 DINOv3 分割模型。"""
     # 先构建 backbone，再根据总 block 数自动解析浅层索引，最后拼装完整分割网络。
@@ -314,6 +306,7 @@ def build_shallow_dinov3_segmentor(
         detail_dims=detail_dims,
         dropout=dropout,
         freeze_backbone=freeze_backbone,
+        input_size=input_size,
     )
 
 
@@ -330,6 +323,7 @@ def load_shallow_dinov3_segmentor_from_checkpoint(
     detail_dims: str | Sequence[int] | None = None,
     dropout: float | None = None,
     freeze_backbone: bool | None = None,
+    input_size: Sequence[int] | None = None,
 ):
     """从 checkpoint 恢复分割模型，并返回模型与原始 checkpoint。"""
     checkpoint = torch.load(checkpoint_path, map_location="cpu")
@@ -350,6 +344,7 @@ def load_shallow_dinov3_segmentor_from_checkpoint(
         "detail_dims": _normalize_detail_dims(detail_dims, saved_config.get("detail_dims", (64, 128, 256))),
         "dropout": dropout if dropout is not None else saved_config.get("dropout", 0.1),
         "freeze_backbone": freeze_backbone if freeze_backbone is not None else saved_config.get("freeze_backbone", True),
+        "input_size": tuple(input_size) if input_size is not None else tuple(saved_config.get("input_size", (512, 512))),
     }
     model = build_shallow_dinov3_segmentor(**resolved_model_config)
     model.load_state_dict(checkpoint["model"])

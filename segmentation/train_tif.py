@@ -9,21 +9,20 @@ from __future__ import annotations
 4. 执行 epoch 级训练与验证。
 5. 保存 checkpoint 和指标文件。
 
-它面向的是当前这个精简版 tif/png 分割场景，尽量保持单机、直接、可读。
+它面向的是当前这个固定 512x512 PNG 分割场景，尽量保持单机、直接、可读。
 """
 
 import argparse
 import json
 import logging
 import random
-from functools import partial
 from pathlib import Path
 
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
-from dinov3.segmentation.datasets import TifSegmentationDataset, segmentation_collate_fn
+from dinov3.segmentation.datasets import PngSegmentationDataset
 from dinov3.segmentation.metrics import CombinedSegmentationLoss, evaluate_model
 from dinov3.segmentation.model import build_shallow_dinov3_segmentor, parse_layer_indices
 
@@ -37,8 +36,7 @@ DEFAULT_BACKBONE_WEIGHTS = "checkpoints/dinov3_vitl16_pretrain_sat493m-eadcf0ff.
 
 def parse_args():
     """定义训练脚本可用的全部命令行参数。"""
-    # 参数设计尽量保持扁平，便于直接在命令行中快速试验不同配置。
-    parser = argparse.ArgumentParser(description="Train a shallow-feature semantic segmentation head on tif images.")
+    parser = argparse.ArgumentParser(description="Train a shallow-feature semantic segmentation head on fixed-size PNG images.")
     parser.add_argument("--dataset-root", type=Path, default=DEFAULT_DATASET_ROOT)
     parser.add_argument("--train-image-dir", type=Path, default=None)
     parser.add_argument("--train-mask-dir", type=Path, default=None)
@@ -55,12 +53,7 @@ def parse_args():
     parser.add_argument("--decoder-dim", type=int, default=128)
     parser.add_argument("--detail-dims", type=str, default="32,64,128")
     parser.add_argument("--dropout", type=float, default=0.1)
-    parser.add_argument("--bands", type=str, default=None)
-    parser.add_argument("--normalize-mode", choices=["percentile", "dtype"], default="percentile")
     parser.add_argument("--input-stats", choices=["auto", "imagenet", "sat493m"], default="auto")
-    parser.add_argument("--percentile-range", type=str, default="2,98")
-    parser.add_argument("--image-size", type=int, nargs="+", default=[384, 384])
-    parser.add_argument("--keep-size", action="store_true")
     parser.add_argument("--ignore-index", type=int, default=255)
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--epochs", type=int, default=20)
@@ -77,26 +70,6 @@ def parse_args():
     return parser.parse_args()
 
 
-def parse_int_list(value: str | None) -> list[int] | None:
-    """把逗号分隔的整数串解析成 Python 列表。"""
-    if value is None or value == "":
-        return None
-    return [int(item.strip()) for item in value.split(",") if item.strip()]
-
-
-def parse_image_size(values: list[int] | None, keep_size: bool = False) -> tuple[int, int] | None:
-    """把命令行里的图像尺寸参数整理成 (H, W) 形式。"""
-    if keep_size:
-        return None
-    if values is None:
-        return None
-    if len(values) == 1:
-        return values[0], values[0]
-    if len(values) == 2:
-        return values[0], values[1]
-    raise ValueError("--image-size expects one integer or two integers")
-
-
 def set_seed(seed: int):
     """固定随机种子，尽量减少重复实验之间的波动。"""
     random.seed(seed)
@@ -107,34 +80,19 @@ def set_seed(seed: int):
 
 def build_dataloaders(args, dataset_dirs: dict[str, Path]):
     """根据当前参数构建训练集和验证集的 dataloader。"""
-    # 训练集与验证集共享同一套读取逻辑，
-    # 区别只在于训练集会启用随机翻转增强。
-    bands = parse_int_list(args.bands)
-    percentile_values = tuple(float(item.strip()) for item in args.percentile_range.split(","))
-    image_size = parse_image_size(args.image_size, keep_size=args.keep_size)
-    collate_fn = partial(segmentation_collate_fn, ignore_index=args.ignore_index)
-
-    train_dataset = TifSegmentationDataset(
+    train_dataset = PngSegmentationDataset(
         image_dir=dataset_dirs["train_image_dir"],
         mask_dir=dataset_dirs["train_mask_dir"],
-        image_size=image_size,
-        band_indices=bands,
-        normalize_mode=args.normalize_mode,
         input_stats=args.input_stats,
         backbone_weights=args.backbone_weights,
-        percentile_range=percentile_values,
         train=True,
         ignore_index=args.ignore_index,
     )
-    val_dataset = TifSegmentationDataset(
+    val_dataset = PngSegmentationDataset(
         image_dir=dataset_dirs["val_image_dir"],
         mask_dir=dataset_dirs["val_mask_dir"],
-        image_size=image_size,
-        band_indices=bands,
-        normalize_mode=args.normalize_mode,
         input_stats=args.input_stats,
         backbone_weights=args.backbone_weights,
-        percentile_range=percentile_values,
         train=False,
         hflip_prob=0.0,
         vflip_prob=0.0,
@@ -147,7 +105,6 @@ def build_dataloaders(args, dataset_dirs: dict[str, Path]):
         shuffle=True,
         num_workers=args.num_workers,
         pin_memory=True,
-        collate_fn=collate_fn,
     )
     val_loader = DataLoader(
         val_dataset,
@@ -155,7 +112,6 @@ def build_dataloaders(args, dataset_dirs: dict[str, Path]):
         shuffle=False,
         num_workers=args.num_workers,
         pin_memory=True,
-        collate_fn=collate_fn,
     )
     return train_loader, val_loader
 
@@ -245,6 +201,7 @@ def main():
         "detail_dims": detail_dims,
         "dropout": args.dropout,
         "freeze_backbone": args.freeze_backbone,
+        "input_size": (512, 512),
     }
 
     model = build_shallow_dinov3_segmentor(**model_config).to(device)
@@ -282,6 +239,7 @@ def main():
 
     logger.info("Training samples: %s | Validation samples: %s", len(train_loader.dataset), len(val_loader.dataset))
     logger.info("Using shallow layers: %s", model.layer_indices)
+    logger.info("Fixed input size: 512x512 PNG")
     history_path = args.output_dir / "metrics_history.jsonl"
 
     for epoch in range(start_epoch, args.epochs):

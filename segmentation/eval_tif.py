@@ -1,22 +1,16 @@
 from __future__ import annotations
 
-"""独立评估入口。
-
-这个脚本用于在训练结束后，单独对某个 checkpoint 做可复现评估。
-它与训练阶段内嵌的验证逻辑使用同一套指标实现，但把执行入口独立出来，
-更适合做正式对比实验、测试集复评和不同输入参数的离线试验。
-"""
+"""固定 512x512 PNG 分割的独立评估入口。"""
 
 import argparse
 import json
 import logging
-from functools import partial
 from pathlib import Path
 
 import torch
 from torch.utils.data import DataLoader
 
-from dinov3.segmentation.datasets import TifSegmentationDataset, segmentation_collate_fn
+from dinov3.segmentation.datasets import PngSegmentationDataset
 from dinov3.segmentation.metrics import evaluate_model
 from dinov3.segmentation.model import load_shallow_dinov3_segmentor_from_checkpoint, parse_layer_indices
 
@@ -29,7 +23,7 @@ DEFAULT_OUTPUT_DIR = Path("outputs/shallow_seg_sat_lite_eval")
 
 def parse_args():
     """定义独立评估脚本所需的命令行参数。"""
-    parser = argparse.ArgumentParser(description="Evaluate a shallow-feature semantic segmentation checkpoint on tif images.")
+    parser = argparse.ArgumentParser(description="Evaluate a shallow-feature semantic segmentation checkpoint on fixed-size PNG images.")
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--dataset-root", type=Path, default=DEFAULT_DATASET_ROOT)
     parser.add_argument("--image-dir", type=Path, default=None)
@@ -45,37 +39,12 @@ def parse_args():
     parser.add_argument("--detail-dims", type=str, default=None)
     parser.add_argument("--dropout", type=float, default=None)
     parser.add_argument("--freeze-backbone", action="store_true", default=False)
-    parser.add_argument("--bands", type=str, default=None)
-    parser.add_argument("--normalize-mode", choices=["percentile", "dtype"], default="percentile")
     parser.add_argument("--input-stats", choices=["auto", "imagenet", "sat493m"], default="auto")
-    parser.add_argument("--percentile-range", type=str, default="2,98")
-    parser.add_argument("--image-size", type=int, nargs="+", default=[384, 384])
-    parser.add_argument("--keep-size", action="store_true")
     parser.add_argument("--ignore-index", type=int, default=255)
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--num-workers", type=int, default=2)
     parser.add_argument("--amp", action=argparse.BooleanOptionalAction, default=True)
     return parser.parse_args()
-
-
-def parse_image_size(values, keep_size: bool = False):
-    """把评估阶段的输入尺寸参数转换成统一格式。"""
-    if keep_size:
-        return None
-    if values is None:
-        return None
-    if len(values) == 1:
-        return values[0], values[0]
-    if len(values) == 2:
-        return values[0], values[1]
-    raise ValueError("--image-size expects one integer or two integers")
-
-
-def parse_int_list(value: str | None) -> list[int] | None:
-    """解析波段参数，例如 0,1,2。"""
-    if value is None or value == "":
-        return None
-    return [int(item.strip()) for item in value.split(",") if item.strip()]
 
 
 def main():
@@ -103,16 +72,11 @@ def main():
     saved_model_config = checkpoint.get("model_config", {})
     dataset_backbone_weights = args.backbone_weights or saved_model_config.get("backbone_weights")
 
-    # 评估数据集默认读取验证集目录。
-    dataset = TifSegmentationDataset(
+    dataset = PngSegmentationDataset(
         image_dir=image_dir,
         mask_dir=mask_dir,
-        image_size=parse_image_size(args.image_size, keep_size=args.keep_size),
-        band_indices=parse_int_list(args.bands),
-        normalize_mode=args.normalize_mode,
         input_stats=args.input_stats,
         backbone_weights=dataset_backbone_weights,
-        percentile_range=tuple(float(item.strip()) for item in args.percentile_range.split(",")),
         train=False,
         hflip_prob=0.0,
         vflip_prob=0.0,
@@ -124,7 +88,6 @@ def main():
         shuffle=False,
         num_workers=args.num_workers,
         pin_memory=True,
-        collate_fn=partial(segmentation_collate_fn, ignore_index=args.ignore_index),
     )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
