@@ -31,10 +31,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--weights", type=str, required=True)
     parser.add_argument("--num-classes", type=int, default=4)
     parser.add_argument("--size", type=int, default=512)
-    parser.add_argument("--samples", type=int, default=4)
-    parser.add_argument("--batch-size", type=int, default=2)
+    parser.add_argument("--samples", type=int, default=8)
+    parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--decoder-dim", type=int, default=128)
-    parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--lr", type=float, default=5e-4)
     parser.add_argument("--seed", type=int, default=7)
     return parser.parse_args()
 
