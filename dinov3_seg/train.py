@@ -4,6 +4,7 @@
 """
 
 from pathlib import Path
+import logging
 import math
 import random
 
@@ -17,6 +18,26 @@ from dinov3_seg.config import get_config
 from dinov3_seg.dataset import SegmentationDataset
 from dinov3_seg.metrics import summarize_metrics, update_confusion_matrix
 from dinov3_seg.model import FrozenDinoV3Segmenter
+
+
+def configure_logging(output_dir: Path, log_name: str = "training.log") -> logging.Logger:
+    """配置同时输出到终端和文件的标准日志。"""
+
+    logger = logging.getLogger("dinov3_seg.train")
+    logger.setLevel(logging.INFO)
+    logger.handlers.clear()
+    logger.propagate = False
+
+    formatter = logging.Formatter("%(asctime)s | %(levelname)s | %(message)s")
+
+    file_handler = logging.FileHandler(output_dir / log_name, encoding="utf-8")
+    file_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
+
+    stream_handler = logging.StreamHandler()
+    stream_handler.setFormatter(formatter)
+    logger.addHandler(stream_handler)
+    return logger
 
 
 def set_seed(seed: int) -> None:
@@ -57,7 +78,14 @@ def update_lr(optimizer: AdamW, step: int, total_steps: int, warmup_steps: int, 
         group["lr"] = lr
 
 
-def evaluate(model: FrozenDinoV3Segmenter, loader: DataLoader, criterion: nn.Module, device: torch.device, cfg):
+def evaluate(
+    model: FrozenDinoV3Segmenter,
+    loader: DataLoader,
+    criterion: nn.Module,
+    device: torch.device,
+    cfg,
+    logger: logging.Logger | None = None,
+):
     """在验证集上跑完整轮评估，并返回汇总指标。"""
 
     model.eval()
@@ -78,6 +106,9 @@ def evaluate(model: FrozenDinoV3Segmenter, loader: DataLoader, criterion: nn.Mod
             loss_sum += loss.item() * images.size(0)
             sample_count += images.size(0)
             update_confusion_matrix(confusion_matrix, logits, masks)
+
+    if logger is not None:
+        logger.info("validation finished: samples=%d avg_loss=%.4f", sample_count, loss_sum / sample_count)
 
     metrics = summarize_metrics(confusion_matrix)
     metrics["loss"] = loss_sum / sample_count
@@ -106,6 +137,7 @@ def main():
 
     # 训练前先确保输出目录存在，避免第一次保存 checkpoint 时因目录缺失失败。
     cfg.paths.output_dir.mkdir(parents=True, exist_ok=True)
+    logger = configure_logging(cfg.paths.output_dir)
 
     # 先创建输出目录，再初始化随机种子和算子精度策略。
     set_seed(cfg.train.seed)
@@ -113,6 +145,16 @@ def main():
     torch.backends.cudnn.benchmark = True
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    logger.info("training started: device=%s output_dir=%s", device, cfg.paths.output_dir)
+    logger.info(
+        "config summary: train_batch=%d eval_batch=%d grad_accum=%d epochs=%d lr=%.6e amp=%s",
+        cfg.train.batch_size,
+        cfg.train.eval_batch_size,
+        cfg.train.grad_accum_steps,
+        cfg.train.epochs,
+        cfg.train.lr,
+        cfg.train.amp_dtype,
+    )
 
     # 训练集开启翻转增强，验证集保持纯净评估。
     train_dataset = SegmentationDataset(
@@ -137,9 +179,17 @@ def main():
     if len(train_dataset) == 0:
         raise ValueError(f"训练集为空: {cfg.paths.train_image_dir}")
 
+    logger.info(
+        "dataset summary: train_samples=%d val_samples=%d train_image_dir=%s val_image_dir=%s",
+        len(train_dataset),
+        len(val_dataset),
+        cfg.paths.train_image_dir,
+        cfg.paths.val_image_dir,
+    )
+
     # 单图或极小数据集调试时，允许把训练集临时当作验证集，便于快速检查链路是否跑通。
     if len(val_dataset) == 0 and cfg.train.allow_train_as_val_when_val_empty:
-        print("warning: 验证集为空，回退为使用训练集做验证，仅适合单图 smoke test。")
+        logger.warning("验证集为空，回退为使用训练集做验证，仅适合单图 smoke test。")
         val_dataset = SegmentationDataset(
             image_dir=cfg.paths.train_image_dir,
             mask_dir=cfg.paths.train_mask_dir,
@@ -175,7 +225,7 @@ def main():
             pin_memory=cfg.data.pin_memory,
         )
     else:
-        print("warning: 验证集为空，将跳过验证，只保存 last_head.pth。")
+        logger.warning("验证集为空，将跳过验证，只保存 last_head.pth。")
 
     # 模型只优化分割头，冻结骨干保持预训练表征稳定。
     model = FrozenDinoV3Segmenter(cfg).to(device)
@@ -200,16 +250,27 @@ def main():
     warmup_steps = int(cfg.train.warmup_epochs * steps_per_epoch)
     best_miou = -1.0
 
+    logger.info(
+        "loader summary: train_batches=%d val_batches=%s effective_train_batch=%d warmup_steps=%d total_steps=%d",
+        steps_per_epoch,
+        len(val_loader) if val_loader is not None else 0,
+        train_batch_size * grad_accum_steps,
+        warmup_steps,
+        total_steps,
+    )
+
     if grad_accum_steps != cfg.train.grad_accum_steps:
-        print(
-            f"warning: grad_accum_steps 从 {cfg.train.grad_accum_steps} 自动调整为 {grad_accum_steps}，"
-            "以匹配当前极小数据集。"
+        logger.warning(
+            "grad_accum_steps 从 %d 自动调整为 %d，以匹配当前极小数据集。",
+            cfg.train.grad_accum_steps,
+            grad_accum_steps,
         )
 
     for epoch in range(cfg.train.epochs):
         # head 参与训练，backbone 保持 eval，避免冻结骨干中的状态发生漂移。
         model.train()
         model.backbone.eval()
+        logger.info("epoch started: %d/%d", epoch + 1, cfg.train.epochs)
 
         # 即使整个模型切到 train，骨干仍强制保持 eval，避免归一化/随机层状态变化。
 
@@ -264,37 +325,54 @@ def main():
                 metrics = summarize_metrics(confusion_matrix)
                 avg_loss = loss_sum / sample_count
                 lr = optimizer.param_groups[0]["lr"]
-                print(
-                    f"epoch={epoch + 1}/{cfg.train.epochs} step={step + 1}/{steps_per_epoch} "
-                    f"lr={lr:.6e} loss={avg_loss:.4f} miou={metrics['mIoU']:.4f} pixacc={metrics['pixel_acc']:.4f}"
+                logger.info(
+                    "train step: epoch=%d/%d step=%d/%d lr=%.6e loss=%.4f miou=%.4f pixacc=%.4f",
+                    epoch + 1,
+                    cfg.train.epochs,
+                    step + 1,
+                    steps_per_epoch,
+                    lr,
+                    avg_loss,
+                    metrics["mIoU"],
+                    metrics["pixel_acc"],
                 )
 
         train_metrics = summarize_metrics(confusion_matrix)
         train_metrics["loss"] = loss_sum / sample_count
-        print(
-            f"train epoch={epoch + 1} loss={train_metrics['loss']:.4f} "
-            f"miou={train_metrics['mIoU']:.4f} pixacc={train_metrics['pixel_acc']:.4f}"
+        logger.info(
+            "train epoch finished: epoch=%d loss=%.4f miou=%.4f pixacc=%.4f",
+            epoch + 1,
+            train_metrics["loss"],
+            train_metrics["mIoU"],
+            train_metrics["pixel_acc"],
         )
 
         checkpoint_metrics = train_metrics
 
         # 即使本轮不做验证，也会保存最新训练得到的分割头，便于中断恢复或 smoke test 检查。
         checkpoint = save_checkpoint(cfg.paths.output_dir, epoch + 1, model, optimizer, checkpoint_metrics)
+        logger.info("checkpoint saved: %s", cfg.paths.output_dir / "last_head.pth")
 
         if val_loader is not None and (epoch + 1) % cfg.train.eval_interval == 0:
-            val_metrics = evaluate(model, val_loader, criterion, device, cfg)
-            print(
-                f"valid epoch={epoch + 1} loss={val_metrics['loss']:.4f} "
-                f"miou={val_metrics['mIoU']:.4f} pixacc={val_metrics['pixel_acc']:.4f}"
+            val_metrics = evaluate(model, val_loader, criterion, device, cfg, logger=logger)
+            logger.info(
+                "validation epoch finished: epoch=%d loss=%.4f miou=%.4f pixacc=%.4f",
+                epoch + 1,
+                val_metrics["loss"],
+                val_metrics["mIoU"],
+                val_metrics["pixel_acc"],
             )
 
             checkpoint = save_checkpoint(cfg.paths.output_dir, epoch + 1, model, optimizer, val_metrics)
+            logger.info("checkpoint updated after validation: %s", cfg.paths.output_dir / "last_head.pth")
 
             # best checkpoint 只由验证集 mIoU 决定，避免被训练集指标误导。
             if val_metrics["mIoU"] > best_miou:
                 best_miou = val_metrics["mIoU"]
                 torch.save(checkpoint, cfg.paths.output_dir / "best_head.pth")
-                print(f"best checkpoint updated: mIoU={best_miou:.4f}")
+                logger.info("best checkpoint updated: path=%s mIoU=%.4f", cfg.paths.output_dir / "best_head.pth", best_miou)
+
+    logger.info("training completed")
 
 
 if __name__ == "__main__":

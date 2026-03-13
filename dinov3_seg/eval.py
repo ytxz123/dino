@@ -4,6 +4,8 @@
 最终输出 loss、mIoU、像素准确率和逐类 IoU。
 """
 
+from pathlib import Path
+
 import torch
 from torch import nn
 from torch.utils.data import DataLoader
@@ -12,15 +14,20 @@ from dinov3_seg.config import get_config
 from dinov3_seg.dataset import SegmentationDataset
 from dinov3_seg.metrics import summarize_metrics, update_confusion_matrix
 from dinov3_seg.model import FrozenDinoV3Segmenter
-from dinov3_seg.train import autocast_context
+from dinov3_seg.train import autocast_context, configure_logging
 
 
 def main():
     """执行一次完整的验证集评估。"""
 
     cfg = get_config()
+    eval_log_dir = Path(cfg.paths.eval_checkpoint).resolve().parent
+    eval_log_dir.mkdir(parents=True, exist_ok=True)
+    logger = configure_logging(eval_log_dir, log_name="eval.log")
+
     # 评估也沿用训练脚本的设备选择规则，优先使用 CUDA。
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    logger.info("evaluation started: device=%s checkpoint=%s", device, cfg.paths.eval_checkpoint)
 
     # 评估阶段不做数据增强，只保留与训练一致的归一化流程。
     val_dataset = SegmentationDataset(
@@ -39,6 +46,7 @@ def main():
         num_workers=cfg.data.num_workers,
         pin_memory=cfg.data.pin_memory,
     )
+    logger.info("dataset summary: val_samples=%d val_batches=%d", len(val_dataset), len(val_loader))
 
     # 先重建完整模型，再只恢复训练时保存的分割头参数。
     model = FrozenDinoV3Segmenter(cfg).to(device)
@@ -47,6 +55,7 @@ def main():
     checkpoint = torch.load(cfg.paths.eval_checkpoint, map_location="cpu")
     model.head.load_state_dict(checkpoint["head"], strict=True)
     model.eval()
+    logger.info("checkpoint loaded successfully")
 
     # 评估损失与训练保持一致，这样 loss 才具有可比较性。
     criterion = nn.CrossEntropyLoss()
@@ -73,10 +82,8 @@ def main():
     metrics["loss"] = loss_sum / len(val_loader.dataset)
 
     # 评估输出尽量保持简单直接，便于脚本化抓取日志。
-    print(f"loss={metrics['loss']:.4f}")
-    print(f"mIoU={metrics['mIoU']:.4f}")
-    print(f"pixel_acc={metrics['pixel_acc']:.4f}")
-    print(f"class_iou={metrics['class_iou']}")
+    logger.info("evaluation finished: loss=%.4f mIoU=%.4f pixel_acc=%.4f", metrics["loss"], metrics["mIoU"], metrics["pixel_acc"])
+    logger.info("class_iou=%s", metrics["class_iou"])
 
 
 if __name__ == "__main__":

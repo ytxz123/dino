@@ -15,6 +15,36 @@ from torch.utils.data import Dataset
 class SegmentationDataset(Dataset):
     """读取图像和掩码对的轻量分割数据集。"""
 
+    @staticmethod
+    def _load_mask_array(mask_path: Path) -> np.ndarray:
+        """把掩码文件统一解析成二维类别图。
+
+        训练使用 CrossEntropyLoss，因此目标张量必须是 [H, W] 的整型类别索引。
+        实际数据里有些 PNG 掩码虽然语义上是灰度标签图，但会被保存成 RGB 或 RGBA，
+        这里统一压回单通道，避免后续堆叠成 [B, H, W, C] 触发 loss 报错。
+        """
+
+        mask = np.array(Image.open(mask_path), dtype=np.int64)
+
+        if mask.ndim == 2:
+            return mask
+
+        if mask.ndim == 3 and mask.shape[2] == 1:
+            return mask[..., 0]
+
+        if mask.ndim == 3 and mask.shape[2] in (3, 4):
+            rgb = mask[..., :3]
+
+            # 常见情况是三个通道内容完全一致，只是文件被编码成 RGB。
+            if np.array_equal(rgb[..., 0], rgb[..., 1]) and np.array_equal(rgb[..., 0], rgb[..., 2]):
+                return rgb[..., 0]
+
+            raise ValueError(
+                f"标签图 {mask_path} 是多通道彩色掩码，当前实现只支持灰度标签或三个通道数值完全一致的 RGB 标签。"
+            )
+
+        raise ValueError(f"标签图 {mask_path} 的形状异常: {mask.shape}")
+
     def __init__(
         self,
         image_dir: Path,
@@ -50,8 +80,8 @@ class SegmentationDataset(Dataset):
 
         # 图像显式转为 RGB，避免灰度图或调色板图引入通道不一致问题。
         image = Image.open(image_path).convert("RGB")
-        # 掩码保持原始单通道标签值，不做颜色空间转换。
-        mask = Image.open(mask_path)
+        # 掩码读成二维类别图；如果文件被错误保存成 RGB，也会在这里自动压回单通道。
+        mask = self._load_mask_array(mask_path)
 
         # 训练阶段只做最基础的水平翻转，保证图像与标签严格同步变换。
         if self.training and random.random() < self.hflip_prob:
@@ -64,5 +94,5 @@ class SegmentationDataset(Dataset):
 
         # 标签原始值为 0/80/160/240，整除后映射到连续类别编号 0~3。
         # 这里不做 one-hot，保持 CrossEntropyLoss 期望的整型类别索引格式。
-        mask = torch.from_numpy(np.array(mask, dtype=np.int64) // self.mask_divisor)
+        mask = torch.from_numpy(mask // self.mask_divisor)
         return image, mask
