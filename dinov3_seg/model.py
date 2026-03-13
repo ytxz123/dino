@@ -1,3 +1,8 @@
+"""冻结 DINOv3 骨干的语义分割模型定义。
+
+整体思路是从 ViT 中提取若干层二维特征图，再用轻量卷积解码头恢复到原图分辨率。
+"""
+
 from pathlib import Path
 
 import torch
@@ -9,6 +14,11 @@ from dinov3.hub.backbones import Weights, dinov3_vitl16
 
 
 def make_group_norm(num_channels: int, max_groups: int) -> nn.GroupNorm:
+    """构造可整除通道数的 GroupNorm。
+
+    GroupNorm 的组数必须整除通道数，因此这里会向下寻找一个合法组数。
+    """
+
     groups = min(max_groups, num_channels)
     while num_channels % groups != 0:
         groups -= 1
@@ -16,6 +26,8 @@ def make_group_norm(num_channels: int, max_groups: int) -> nn.GroupNorm:
 
 
 class ConvNormAct(nn.Module):
+    """卷积 + GroupNorm + GELU 的基础积木。"""
+
     def __init__(self, in_channels: int, out_channels: int, kernel_size: int, norm_groups: int):
         super().__init__()
         padding = kernel_size // 2
@@ -30,6 +42,8 @@ class ConvNormAct(nn.Module):
 
 
 class UpsampleBlock(nn.Module):
+    """先双线性上采样，再做深度可分离卷积细化特征。"""
+
     def __init__(self, in_channels: int, out_channels: int, norm_groups: int):
         super().__init__()
         self.depthwise = nn.Conv2d(
@@ -45,6 +59,7 @@ class UpsampleBlock(nn.Module):
         self.act = nn.GELU()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # 先扩大空间分辨率，再用轻量卷积补充局部细节。
         x = F.interpolate(x, scale_factor=2.0, mode="bilinear", align_corners=False)
         x = self.depthwise(x)
         x = self.pointwise(x)
@@ -53,6 +68,8 @@ class UpsampleBlock(nn.Module):
 
 
 class MediumSegmentationHead(nn.Module):
+    """适合冻结 ViT 特征的中等规模解码头。"""
+
     def __init__(
         self,
         in_channels: int,
@@ -79,16 +96,24 @@ class MediumSegmentationHead(nn.Module):
         # 多层输入先做同维度投影，再在通道维拼接，避免直接拼接 1024 维特征造成解码头过重。
         projected = [proj(feature) for proj, feature in zip(self.projections, features)]
         x = self.fuse(torch.cat(projected, dim=1))
+
+        # 逐级上采样，把 32x32 的 ViT 特征恢复到更高分辨率。
         for block in self.up_blocks:
             x = block(x)
         x = self.classifier(x)
+
+        # 最后一层插值用于精确对齐输入图像尺寸。
         return F.interpolate(x, size=output_size, mode="bilinear", align_corners=False)
 
 
 def build_frozen_vitl16(weights_path: str | Path, checkpoint_key: str | None, backbone_profile: str) -> nn.Module:
+    """构建并冻结 DINOv3 ViT-L/16 骨干。"""
+
     profile = Weights[backbone_profile.upper()]
     backbone = dinov3_vitl16(pretrained=False, weights=profile)
     init_model_from_checkpoint_for_evals(backbone, pretrained_weights=weights_path, checkpoint_key=checkpoint_key)
+
+    # 分割训练只更新 head，因此这里显式冻结所有骨干参数。
     backbone.eval()
     for parameter in backbone.parameters():
         parameter.requires_grad = False
@@ -96,8 +121,12 @@ def build_frozen_vitl16(weights_path: str | Path, checkpoint_key: str | None, ba
 
 
 class FrozenDinoV3Segmenter(nn.Module):
+    """冻结 DINOv3 骨干并外挂分割头的完整模型。"""
+
     def __init__(self, cfg):
         super().__init__()
+
+        # 统一排序后再取层，保证 checkpoint 与日志中的层序稳定可复现。
         self.feature_layers = tuple(sorted(cfg.model.feature_layers))
         self.backbone = build_frozen_vitl16(
             weights_path=cfg.paths.backbone_weights,
@@ -117,6 +146,8 @@ class FrozenDinoV3Segmenter(nn.Module):
     def forward(self, images: torch.Tensor) -> torch.Tensor:
         # 骨干完全冻结，因此特征提取阶段不保留梯度，显著降低 512x512 训练显存。
         with torch.no_grad():
+            # get_intermediate_layers 会直接返回 reshape 后的二维特征图，
+            # 这对分割这类密集预测任务最直接。
             features = self.backbone.get_intermediate_layers(
                 images,
                 n=self.feature_layers,

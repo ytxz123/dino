@@ -1,3 +1,8 @@
+"""分割模型训练入口。
+
+脚本负责搭建数据集、模型、优化器和学习率调度，并在每轮结束后执行验证与保存权重。
+"""
+
 from pathlib import Path
 import math
 import random
@@ -15,6 +20,8 @@ from dinov3_seg.model import FrozenDinoV3Segmenter
 
 
 def set_seed(seed: int) -> None:
+    """固定常见随机源，尽量提升实验可复现性。"""
+
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -22,13 +29,18 @@ def set_seed(seed: int) -> None:
 
 
 def autocast_context(device: torch.device, amp_dtype: str):
+    """根据设备和配置返回合适的自动混合精度上下文。"""
+
     if device.type != "cuda":
+        # CPU 路径直接关闭 autocast，避免引入无意义的上下文开销。
         return torch.autocast(device_type="cpu", enabled=False)
     dtype = torch.bfloat16 if amp_dtype == "bf16" else torch.float16
     return torch.autocast(device_type="cuda", dtype=dtype)
 
 
 def update_lr(optimizer: AdamW, step: int, total_steps: int, warmup_steps: int, base_lr: float, min_lr: float) -> None:
+    """执行线性 warmup + 余弦退火学习率更新。"""
+
     if step < warmup_steps:
         lr = base_lr * float(step + 1) / float(max(1, warmup_steps))
     else:
@@ -39,6 +51,8 @@ def update_lr(optimizer: AdamW, step: int, total_steps: int, warmup_steps: int, 
 
 
 def evaluate(model: FrozenDinoV3Segmenter, loader: DataLoader, criterion: nn.Module, device: torch.device, cfg):
+    """在验证集上跑完整轮评估，并返回汇总指标。"""
+
     model.eval()
     confusion_matrix = torch.zeros(cfg.data.num_classes, cfg.data.num_classes, dtype=torch.int64, device=device)
     loss_sum = 0.0
@@ -46,6 +60,7 @@ def evaluate(model: FrozenDinoV3Segmenter, loader: DataLoader, criterion: nn.Mod
 
     with torch.no_grad():
         for images, masks in loader:
+            # 验证阶段不保留梯度，但仍复用训练时的 AMP 设置，保证吞吐一致。
             images = images.to(device, non_blocking=True)
             masks = masks.to(device, non_blocking=True)
             with autocast_context(device, cfg.train.amp_dtype):
@@ -61,15 +76,19 @@ def evaluate(model: FrozenDinoV3Segmenter, loader: DataLoader, criterion: nn.Mod
 
 
 def main():
+    """执行完整训练流程。"""
+
     cfg = get_config()
     cfg.paths.output_dir.mkdir(parents=True, exist_ok=True)
 
+    # 先创建输出目录，再初始化随机种子和算子精度策略。
     set_seed(cfg.train.seed)
     torch.set_float32_matmul_precision("high")
     torch.backends.cudnn.benchmark = True
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+    # 训练集开启翻转增强，验证集保持纯净评估。
     train_dataset = SegmentationDataset(
         image_dir=cfg.paths.train_image_dir,
         mask_dir=cfg.paths.train_mask_dir,
@@ -105,11 +124,13 @@ def main():
         pin_memory=cfg.data.pin_memory,
     )
 
+    # 模型只优化分割头，冻结骨干保持预训练表征稳定。
     model = FrozenDinoV3Segmenter(cfg).to(device)
     criterion = nn.CrossEntropyLoss()
     optimizer = AdamW(model.head.parameters(), lr=cfg.train.lr, weight_decay=cfg.train.weight_decay)
     scaler = torch.cuda.amp.GradScaler(enabled=device.type == "cuda" and cfg.train.amp_dtype == "fp16")
 
+    # 学习率按全局 step 更新，因此这里先计算完整训练过程的步数。
     steps_per_epoch = len(train_loader)
     total_steps = cfg.train.epochs * steps_per_epoch
     warmup_steps = int(cfg.train.warmup_epochs * steps_per_epoch)
@@ -118,6 +139,8 @@ def main():
     for epoch in range(cfg.train.epochs):
         model.train()
         model.backbone.eval()
+
+        # 即使整个模型切到 train，骨干仍强制保持 eval，避免归一化/随机层状态变化。
 
         confusion_matrix = torch.zeros(cfg.data.num_classes, cfg.data.num_classes, dtype=torch.int64, device=device)
         loss_sum = 0.0
@@ -128,12 +151,15 @@ def main():
             global_step = epoch * steps_per_epoch + step
             update_lr(optimizer, global_step, total_steps, warmup_steps, cfg.train.lr, cfg.train.min_lr)
 
+            # 采用异步拷贝把数据搬到设备，减小数据准备带来的停顿。
             images = images.to(device, non_blocking=True)
             masks = masks.to(device, non_blocking=True)
 
             with autocast_context(device, cfg.train.amp_dtype):
                 logits = model(images)
                 loss = criterion(logits, masks)
+
+                # 梯度累积时，把 loss 按累积步数缩放，保证等效梯度大小不变。
                 scaled_loss = loss / cfg.train.grad_accum_steps
 
             if scaler.is_enabled():
@@ -144,6 +170,8 @@ def main():
             if (step + 1) % cfg.train.grad_accum_steps == 0 or (step + 1) == steps_per_epoch:
                 if scaler.is_enabled():
                     scaler.unscale_(optimizer)
+
+                # 只裁剪分割头梯度，因为骨干并不参与反向传播。
                 torch.nn.utils.clip_grad_norm_(model.head.parameters(), cfg.train.grad_clip)
                 if scaler.is_enabled():
                     scaler.step(optimizer)
@@ -157,6 +185,7 @@ def main():
             update_confusion_matrix(confusion_matrix, logits.detach(), masks)
 
             if (step + 1) % cfg.train.log_interval == 0:
+                # 日志使用“当前 epoch 已累计”的混淆矩阵，更能反映整体训练趋势。
                 metrics = summarize_metrics(confusion_matrix)
                 avg_loss = loss_sum / sample_count
                 lr = optimizer.param_groups[0]["lr"]
@@ -179,6 +208,7 @@ def main():
                 f"miou={val_metrics['mIoU']:.4f} pixacc={val_metrics['pixel_acc']:.4f}"
             )
 
+            # 只保存 head 与优化器状态，避免重复存储冻结骨干导致 checkpoint 过大。
             checkpoint = {
                 "head": model.head.state_dict(),
                 "optimizer": optimizer.state_dict(),

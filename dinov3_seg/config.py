@@ -1,12 +1,21 @@
+"""语义分割实验的集中配置定义。
+
+这个文件只负责声明“实验需要哪些配置”，不承担训练逻辑。
+这样训练、评估、推理脚本都能共享同一套默认参数，避免多处硬编码。
+"""
+
 from dataclasses import dataclass, field
 from pathlib import Path
 
 
+# 以当前文件所在目录作为所有默认相对路径的锚点，便于整个子项目独立搬迁。
 ROOT = Path(__file__).resolve().parent
 
 
 @dataclass
 class PathConfig:
+    """管理数据、权重和输出文件的位置。"""
+
     train_image_dir: Path = ROOT / "data/train/images"
     train_mask_dir: Path = ROOT / "data/train/masks"
     val_image_dir: Path = ROOT / "data/val/images"
@@ -19,6 +28,8 @@ class PathConfig:
 
 @dataclass
 class DataConfig:
+    """管理输入尺寸、类别数和预处理超参数。"""
+
     image_size: int = 512
     num_classes: int = 4
     mask_divisor: int = 80
@@ -31,6 +42,8 @@ class DataConfig:
 
 @dataclass
 class ModelConfig:
+    """管理骨干提取层和分割头规模。"""
+
     backbone_profile: str = "SAT493M"
     feature_layers: tuple[int, ...] = (11, 17, 23)
     fusion_dim: int = 256
@@ -41,6 +54,8 @@ class ModelConfig:
 
 @dataclass
 class TrainConfig:
+    """管理训练过程相关的优化和日志参数。"""
+
     seed: int = 3407
     epochs: int = 40
     batch_size: int = 4
@@ -58,6 +73,8 @@ class TrainConfig:
 
 @dataclass
 class ExperimentConfig:
+    """把路径、数据、模型和训练配置聚合成一个统一对象。"""
+
     paths: PathConfig = field(default_factory=PathConfig)
     data: DataConfig = field(default_factory=DataConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
@@ -65,4 +82,10 @@ class ExperimentConfig:
 
 
 def get_config() -> ExperimentConfig:
+    """返回一份新的默认实验配置。
+
+    这里不做全局单例，目的是让调用方可以安全地修改返回值，
+    而不会污染其它脚本中的默认配置。
+    """
+
     return ExperimentConfig()
