@@ -175,6 +175,27 @@ dinov3_seg/
 
 如果你的 GPU 不支持 BF16，把 `amp_dtype` 改成 `"fp16"`。
 
+### 4.5 单张图片 smoke test
+
+如果你只是想确认训练链路能跑通，而不是做正式评估，建议把 [config.py](config.py) 改成下面这组参数：
+
+```python
+train.batch_size = 1
+train.eval_batch_size = 1
+train.grad_accum_steps = 1
+train.epochs = 5
+train.log_interval = 1
+train.allow_train_as_val_when_val_empty = True
+data.num_workers = 0
+data.train_hflip_prob = 0.0
+```
+
+说明：
+
+- 如果没有单独验证集，这组配置会自动回退成“训练集同时作为验证集”，只适合检查代码和损失是否正常下降。
+- 现在训练脚本会在每个 epoch 保存 `last_head.pth`，即使验证集为空也不会中断。
+- 当数据量比 `grad_accum_steps` 还小时，训练脚本会自动把实际累积步数收缩到可用 batch 数，避免单图训练时梯度被额外缩小。
+
 ## 5. 训练流程
 
 ### 5.1 启动训练

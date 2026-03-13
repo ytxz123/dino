@@ -27,16 +27,19 @@ class SegmentationDataset(Dataset):
     ):
         # 通过排序保证图像顺序稳定，便于复现实验与排查数据问题。
         self.image_paths = sorted(Path(image_dir).glob("*.png"))
+        # 掩码目录单独保存，getitem 时按“同名文件”规则动态拼接路径。
         self.mask_dir = Path(mask_dir)
 
         # 均值和方差预先整理成 [C, 1, 1]，便于后续直接做广播归一化。
         self.mean = torch.tensor(mean, dtype=torch.float32).view(3, 1, 1)
         self.std = torch.tensor(std, dtype=torch.float32).view(3, 1, 1)
+        # 记录标签映射和训练增强的控制参数。
         self.mask_divisor = mask_divisor
         self.training = training
         self.hflip_prob = hflip_prob
 
     def __len__(self) -> int:
+        # DataLoader 会通过这个长度决定 epoch 内有多少个样本可迭代。
         return len(self.image_paths)
 
     def __getitem__(self, index: int):
@@ -45,7 +48,9 @@ class SegmentationDataset(Dataset):
         image_path = self.image_paths[index]
         mask_path = self.mask_dir / image_path.name
 
+        # 图像显式转为 RGB，避免灰度图或调色板图引入通道不一致问题。
         image = Image.open(image_path).convert("RGB")
+        # 掩码保持原始单通道标签值，不做颜色空间转换。
         mask = Image.open(mask_path)
 
         # 训练阶段只做最基础的水平翻转，保证图像与标签严格同步变换。
@@ -58,5 +63,6 @@ class SegmentationDataset(Dataset):
         image = (image - self.mean) / self.std
 
         # 标签原始值为 0/80/160/240，整除后映射到连续类别编号 0~3。
+        # 这里不做 one-hot，保持 CrossEntropyLoss 期望的整型类别索引格式。
         mask = torch.from_numpy(np.array(mask, dtype=np.int64) // self.mask_divisor)
         return image, mask

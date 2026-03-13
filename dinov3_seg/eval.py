@@ -19,6 +19,7 @@ def main():
     """执行一次完整的验证集评估。"""
 
     cfg = get_config()
+    # 评估也沿用训练脚本的设备选择规则，优先使用 CUDA。
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # 评估阶段不做数据增强，只保留与训练一致的归一化流程。
@@ -41,10 +42,13 @@ def main():
 
     # 先重建完整模型，再只恢复训练时保存的分割头参数。
     model = FrozenDinoV3Segmenter(cfg).to(device)
+
+    # checkpoint 中只存了分割头和优化器，不包含冻结的 backbone 完整权重。
     checkpoint = torch.load(cfg.paths.eval_checkpoint, map_location="cpu")
     model.head.load_state_dict(checkpoint["head"], strict=True)
     model.eval()
 
+    # 评估损失与训练保持一致，这样 loss 才具有可比较性。
     criterion = nn.CrossEntropyLoss()
     confusion_matrix = torch.zeros(cfg.data.num_classes, cfg.data.num_classes, dtype=torch.int64, device=device)
     loss_sum = 0.0
@@ -54,9 +58,13 @@ def main():
             # non_blocking=True 配合 pin_memory 可减少主机到显存拷贝等待。
             images = images.to(device, non_blocking=True)
             masks = masks.to(device, non_blocking=True)
+
+            # autocast 与训练阶段保持一致，可以减少精度设置不一致带来的偏差。
             with autocast_context(device, cfg.train.amp_dtype):
                 logits = model(images)
                 loss = criterion(logits, masks)
+
+            # loss_sum 按样本数做加权累计，最后再除以总样本数得到平均损失。
             loss_sum += loss.item() * images.size(0)
             update_confusion_matrix(confusion_matrix, logits, masks)
 
@@ -64,6 +72,7 @@ def main():
     metrics = summarize_metrics(confusion_matrix)
     metrics["loss"] = loss_sum / len(val_loader.dataset)
 
+    # 评估输出尽量保持简单直接，便于脚本化抓取日志。
     print(f"loss={metrics['loss']:.4f}")
     print(f"mIoU={metrics['mIoU']:.4f}")
     print(f"pixel_acc={metrics['pixel_acc']:.4f}")
