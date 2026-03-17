@@ -1,11 +1,11 @@
-# DINOv3 ViT-L/16 三类语义分割
+# DINOv3 ViT-L/16 四类语义分割
 
-本目录提供一个独立、极简的三类语义分割工程，满足以下约束：
+本目录提供一个独立、极简的四类语义分割工程，满足以下约束：
 
 - 冻结 DINOv3 ViT-L/16 全部权重。
 - 默认读取本地 SAT493M 预训练权重。
 - 仅提取骨干最后一层特征。
-- 面向 512×512 PNG 输入与三类标注掩码。
+- 面向 512×512 PNG 输入与四类标注掩码。
 - 单卡 16G 显存可训练。
 
 ## 1. 模型原理
@@ -48,8 +48,8 @@ data/
 
 - 输入图像为 RGB PNG。
 - 标注图为单通道 PNG。
-- 类别像素值分别为 0、50、100，对应类别 0、1、2。
-- 代码内部会直接将标注除以 50 还原为 0/1/2。
+- 类别像素值分别为 0、50、100、150，对应类别 0、1、2、3。
+- 代码内部会直接将标注除以 50 还原为 0/1/2/3。
 
 ## 3. 文件结构
 
@@ -57,9 +57,9 @@ data/
 three_class_segmentation/
   __init__.py
   config.py
-  config.yaml
   dataset.py
   engine.py
+  infer.py
   model.py
   run.py
   README.md
@@ -68,15 +68,15 @@ three_class_segmentation/
 各文件职责：
 
 - config.py：配置 dataclass 与配置加载/保存。
-- config.yaml：所有可调参数统一入口。
 - dataset.py：512×512 图像与掩码读取、归一化、轻量增强。
 - model.py：冻结 ViT-L/16 与线性分割头封装。
 - engine.py：训练、评估、checkpoint、指标统计。
-- run.py：命令行入口。
+- infer.py：单张图或目录推理脚本。
+- run.py：训练与评估入口。
 
 ## 4. 配置说明
 
-所有参数都在 config.yaml 中维护，最关键的是以下几组：
+所有参数都在 config.py 中维护，最关键的是以下几组：
 
 ### 4.1 dataset
 
@@ -95,7 +95,7 @@ three_class_segmentation/
 
 ### 4.3 head
 
-- num_classes：类别数，默认 3。
+- num_classes：类别数，默认 4。
 - dropout：线性头 dropout。
 - use_batchnorm：默认 false，单卡轻量训练更直接。
 
@@ -105,8 +105,9 @@ three_class_segmentation/
 - batch_size：单卡微批大小。
 - accumulation_steps：梯度累积步数。
 - hflip_prob：训练时水平翻转概率。
-- ce_weight：交叉熵损失权重。
-- dice_weight：Dice 损失权重。
+- ce_weight：交叉熵损失权重，可与 Dice 同时启用。
+- dice_weight：Dice 损失权重，可与交叉熵相加使用。
+- class_weight：类别权重，按 [背景, 类1, 类2, 类3] 传入，适合类别极不平衡场景。
 - resume_from：恢复训练 checkpoint 路径。
 
 ### 4.5 eval
@@ -129,19 +130,19 @@ three_class_segmentation/
 checkpoints/dinov3_vitl16_pretrain_sat493m-eadcf0ff.pth
 ```
 
-然后在 config.yaml 中把 backbone.weights_path 改成你的实际本地路径。
+然后在 config.py 中把 backbone.weights_path 改成你的实际本地路径。
 
 ### 5.2 启动训练
 
 在仓库根目录执行：
 
 ```bash
-python -m three_class_segmentation.run --config three_class_segmentation/config.yaml --mode train
+python three_class_segmentation/run.py --mode train
 ```
 
 训练输出默认写入 output_dir，包括：
 
-- resolved_config.yaml：实际生效配置。
+- resolved_config.json：实际生效配置。
 - best.pth：最佳 mIoU 对应的分割头权重。
 - last.pth：最后一次保存的分割头权重。
 - best_metrics.json：最佳验证指标。
@@ -149,10 +150,10 @@ python -m three_class_segmentation.run --config three_class_segmentation/config.
 
 ## 6. 评估步骤
 
-先把 config.yaml 中的 eval.checkpoint_path 改成待评估 checkpoint，然后执行：
+先把 config.py 中的 eval.checkpoint_path 改成待评估 checkpoint，然后执行：
 
 ```bash
-python -m three_class_segmentation.run --config three_class_segmentation/config.yaml --mode eval
+python three_class_segmentation/run.py --mode eval
 ```
 
 评估结果会写入：
@@ -161,7 +162,28 @@ python -m three_class_segmentation.run --config three_class_segmentation/config.
 outputs/three_class_segmentation/eval_metrics.json
 ```
 
-## 7. 16G 显存建议
+## 7. 推理步骤
+
+单张图推理：
+
+```bash
+python three_class_segmentation/infer.py --input path/to/image.png
+```
+
+目录推理：
+
+```bash
+python three_class_segmentation/infer.py --input path/to/image_dir --output-dir outputs/three_class_segmentation/inference
+```
+
+推理输出默认保存在 runtime.output_dir/inference，下列文件会按输入文件名生成：
+
+- *_index.png：类别索引图，像素值为 0/1/2/3。
+- *_mask.png：按 label_divisor 编码的灰度 mask，像素值为 0/50/100/150。
+- *_color.png：彩色类别图。
+- *_overlay.png：叠加原图的可视化结果。
+
+## 8. 16G 显存建议
 
 默认配置已经按 16G 单卡做了约束：
 
@@ -176,12 +198,12 @@ outputs/three_class_segmentation/eval_metrics.json
 2. 再把 accumulation_steps 从 4 提到 8。
 3. 最后再把 eval.batch_size 从 4 降到 2。
 
-## 8. 默认适用场景
+## 9. 默认适用场景
 
 该实现适合你当前描述的任务边界：
 
 - 输入固定 512×512。
-- 三类像素级语义分割。
+- 四类像素级语义分割。
 - 训练集约 12000 张，评估集约 5000 张。
 - 重点是快速验证冻结 DINOv3 ViT-L/16 的迁移效果。
 

@@ -7,7 +7,7 @@ from torch.utils.data import DataLoader, Dataset
 from torchvision.transforms import InterpolationMode
 from torchvision.transforms import functional as TF
 
-from .config import DatasetConfig
+from three_class_segmentation.config import DatasetConfig
 
 
 class SegmentationDataset(Dataset):
@@ -45,7 +45,7 @@ class SegmentationDataset(Dataset):
             mask = TF.hflip(mask)
 
         image_tensor = TF.normalize(TF.to_tensor(image), self.mean, self.std)
-        # 标注像素值固定为类别编号乘以 50，这里直接还原为 0/1/2。
+        # 标注像素值固定为类别编号乘以 50，这里直接还原为 0/1/2/3。
         mask_tensor = torch.from_numpy(np.array(mask, dtype=np.uint8) // self.label_divisor).long()
         return image_tensor, mask_tensor
 

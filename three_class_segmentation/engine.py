@@ -12,9 +12,9 @@ from dinov3.eval.segmentation.loss import MultiSegmentationLoss
 from dinov3.eval.segmentation.metrics import calculate_intersect_and_union, calculate_segmentation_metrics
 from dinov3.eval.segmentation.schedulers import build_scheduler
 
-from .config import ThreeClassSegConfig, save_config
-from .dataset import build_dataloader
-from .model import build_model, load_checkpoint
+from three_class_segmentation.config import ThreeClassSegConfig, save_config
+from three_class_segmentation.dataset import build_dataloader
+from three_class_segmentation.model import build_model, load_checkpoint
 
 
 logger = logging.getLogger("three_class_segmentation")
@@ -154,7 +154,7 @@ def train(config: ThreeClassSegConfig) -> dict[str, float]:
 
     output_dir = Path(config.runtime.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    save_config(config, str(output_dir / "resolved_config.yaml"))
+    save_config(config, str(output_dir / "resolved_config.json"))
 
     device = resolve_device(config.runtime.device)
     train_loader = build_dataloader(
@@ -201,6 +201,7 @@ def train(config: ThreeClassSegConfig) -> dict[str, float]:
     criterion = MultiSegmentationLoss(
         diceloss_weight=config.train.dice_weight,
         celoss_weight=config.train.ce_weight,
+        class_weight=config.train.class_weight,
     )
 
     start_epoch = 0

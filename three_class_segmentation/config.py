@@ -1,6 +1,6 @@
+import json
+from copy import deepcopy
 from dataclasses import asdict, dataclass, field
-
-from omegaconf import OmegaConf
 
 from dinov3.data.transforms import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 
@@ -31,7 +31,7 @@ class BackboneConfig:
 
 @dataclass
 class HeadConfig:
-    num_classes: int = 3
+    num_classes: int = 4
     dropout: float = 0.1
     use_batchnorm: bool = False
 
@@ -63,6 +63,7 @@ class TrainConfig:
     hflip_prob: float = 0.5
     ce_weight: float = 1.0
     dice_weight: float = 0.0
+    class_weight: tuple[float, ...] | None = None
     eval_interval: int = 1
     save_every: int = 1
     log_interval: int = 50
@@ -96,12 +97,14 @@ class ThreeClassSegConfig:
     runtime: RuntimeConfig = field(default_factory=RuntimeConfig)
 
 
-def load_config(config_path: str) -> ThreeClassSegConfig:
-    structured_config = OmegaConf.structured(ThreeClassSegConfig)
-    user_config = OmegaConf.load(config_path)
-    merged_config = OmegaConf.merge(structured_config, user_config)
-    return OmegaConf.to_object(merged_config)
+DEFAULT_CONFIG = ThreeClassSegConfig()
+
+
+def load_config() -> ThreeClassSegConfig:
+    return deepcopy(DEFAULT_CONFIG)
 
 
 def save_config(config: ThreeClassSegConfig, config_path: str) -> None:
-    OmegaConf.save(config=OmegaConf.create(asdict(config)), f=config_path)
+    with open(config_path, "w", encoding="utf-8") as file:
+        json.dump(asdict(config), file, indent=2, ensure_ascii=False)
+        file.write("\n")

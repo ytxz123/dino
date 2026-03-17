@@ -8,7 +8,7 @@ from dinov3.eval.segmentation.models.heads.linear_head import LinearHead
 from dinov3.eval.utils import ModelWithIntermediateLayers
 from dinov3.hub.backbones import dinov3_vitl16
 
-from .config import ThreeClassSegConfig
+from three_class_segmentation.config import ThreeClassSegConfig
 
 
 BACKBONE_LAYER_MAP = {layer.name: layer for layer in BackboneLayersSet}
