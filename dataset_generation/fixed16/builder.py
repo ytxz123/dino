@@ -21,6 +21,7 @@ from dataset_generation.common.geometry_utils import (
     sort_lines,
 )
 from dataset_generation.common.io_utils import build_sharegpt_dataset_info, ensure_directory, load_jsonl, write_json, write_jsonl
+from dataset_generation.common.progress import log_progress
 
 
 DEFAULT_FIXED16_PROMPT_TEMPLATE = """<image>
@@ -317,10 +318,13 @@ def build_split_dataset(
         return {"missing_split": True, "split_jsonl": str(split_jsonl), "split_meta_jsonl": str(split_meta_jsonl)}
     rows = load_jsonl(split_jsonl)
     meta_rows = load_jsonl(split_meta_jsonl)
+    log_progress("Fixed16", f"开始处理 split={split} source_rows={len(rows)} source_meta={len(meta_rows)}")
     row_by_id = {str(row.get("id")): row for row in rows}
     generated_pairs: List[Tuple[Dict, Dict]] = []
     visualization_count = 0
     used_source = 0
+    total_source = len(meta_rows) if int(max_source_samples_per_split) <= 0 else min(len(meta_rows), int(max_source_samples_per_split))
+    progress_step = max(1, total_source // 20) if total_source > 0 else 1
     for source_meta in meta_rows:
         source_id = str(source_meta.get("id"))
         source_row = row_by_id.get(source_id)
@@ -329,6 +333,8 @@ def build_split_dataset(
         used_source += 1
         if int(max_source_samples_per_split) > 0 and used_source > int(max_source_samples_per_split):
             break
+        if used_source == 1 or used_source == total_source or used_source % progress_step == 0:
+            log_progress("Fixed16", f"split={split} source_progress={used_source}/{total_source} source_id={source_id}")
         crop_box = source_meta.get("crop_box", {})
         patch_size = int(crop_box.get("x_max", 0)) - int(crop_box.get("x_min", 0))
         if patch_size <= 1:
@@ -451,6 +457,7 @@ def build_split_dataset(
         "written_meta_rows": written_meta,
         "visualizations": visualization_count,
     })
+    log_progress("Fixed16", f"split={split} 完成 written_rows={written_rows} written_meta={written_meta} visualizations={visualization_count}")
     return summary
 
 
@@ -478,6 +485,7 @@ def build_fixed16_dataset(
     input_root = Path(input_root).resolve()
     output_root = Path(output_root).resolve()
     ensure_directory(output_root)
+    log_progress("Fixed16", f"开始构建 fixed16 input_root={input_root} output_root={output_root}")
     image_mode = expose_source_images(input_root=input_root, output_root=output_root, mode=str(image_root_mode))
     rng = random.Random(int(seed))
     split_list = [str(split) for split in splits]
@@ -513,4 +521,5 @@ def build_fixed16_dataset(
     dataset_info = build_sharegpt_dataset_info(dataset_root=output_root, prefix=dataset_prefix, splits=split_list)
     write_json(output_root / "dataset_info.json", dataset_info)
     write_json(output_root / "build_summary.json", summary)
+    log_progress("Fixed16", f"构建完成 output_root={output_root} image_root_mode={image_mode}")
     return summary

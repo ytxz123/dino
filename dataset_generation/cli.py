@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import json
 from pathlib import Path
 
@@ -15,6 +16,7 @@ from dataset_generation.common.defaults import (
     DEFAULT_STAGE_B_SYSTEM_PROMPT,
 )
 from dataset_generation.common.io_utils import load_jsonl, write_json
+from dataset_generation.common.progress import log_progress
 from dataset_generation.fixed16.builder import build_fixed16_dataset
 from dataset_generation.manifest.builder import build_family_manifest, save_family_manifest
 from dataset_generation.stages.exporter import export_stage_datasets
@@ -161,6 +163,7 @@ def build_root_parser() -> argparse.ArgumentParser:
 
 def run_build_manifest(args: argparse.Namespace) -> None:
     """执行 family manifest 构建。"""
+    log_progress("CLI", "开始构建 family manifest")
     split_roots = {}
     if str(args.train_root).strip():
         split_roots["train"] = Path(str(args.train_root).strip()).resolve()
@@ -203,10 +206,12 @@ def run_build_manifest(args: argparse.Namespace) -> None:
     )
     print(f"Built {len(families)} families", flush=True)
     print(f"Manifest: {output_manifest}", flush=True)
+    log_progress("CLI", f"family manifest 构建完成 family_count={len(families)}")
 
 
 def run_build_fixed16(args: argparse.Namespace) -> None:
     """执行 fixed16 数据集构建。"""
+    log_progress("CLI", f"开始构建 fixed16 input_root={Path(args.input_root).resolve()}")
     summary = build_fixed16_dataset(
         input_root=Path(args.input_root).resolve(),
         output_root=Path(args.output_root).resolve(),
@@ -224,10 +229,12 @@ def run_build_fixed16(args: argparse.Namespace) -> None:
         max_visualizations_per_split=int(args.max_visualizations_per_split),
     )
     print(f"Built fixed16 dataset: {summary['output_root']}", flush=True)
+    log_progress("CLI", f"fixed16 构建完成 output_root={summary['output_root']}")
 
 
 def run_export_stages(args: argparse.Namespace) -> None:
     """执行 stage_a / stage_b 导出。"""
+    log_progress("CLI", f"开始导出 stage 数据集 manifest={Path(args.family_manifest).resolve()}")
     families = load_jsonl(Path(args.family_manifest).resolve())
     if bool(args.lane_only):
         include_lane = True
@@ -273,6 +280,7 @@ def run_export_stages(args: argparse.Namespace) -> None:
         payload["source_family_manifest"] = manifest_path
         write_json(summary_path, payload)
     print(f"Built stage datasets: {result['stage_a_root']} and {result['stage_b_root']}", flush=True)
+    log_progress("CLI", f"stage 数据集导出完成 output_root={Path(args.output_root).resolve()}")
 
 
 def run_build_all(args: argparse.Namespace) -> None:
@@ -280,6 +288,7 @@ def run_build_all(args: argparse.Namespace) -> None:
     output_root = Path(args.output_root).resolve()
     output_root.mkdir(parents=True, exist_ok=True)
     manifest_path = Path(args.manifest_path).resolve() if str(args.manifest_path).strip() else output_root / DEFAULT_MANIFEST_PATH.name
+    log_progress("CLI", f"开始 build-all output_root={output_root}")
     split_roots = {}
     if str(args.train_root).strip():
         split_roots["train"] = Path(str(args.train_root).strip()).resolve()
@@ -289,6 +298,7 @@ def run_build_all(args: argparse.Namespace) -> None:
     families = []
     dataset_root = Path(args.dataset_root).resolve()
     if "train" in split_list:
+        log_progress("CLI", "开始构建 train manifest")
         families.extend(
             build_family_manifest(
                 dataset_root=dataset_root,
@@ -314,6 +324,7 @@ def run_build_all(args: argparse.Namespace) -> None:
             )
         )
     if "val" in split_list:
+        log_progress("CLI", "开始构建 val manifest")
         families.extend(
             build_family_manifest(
                 dataset_root=dataset_root,
@@ -350,6 +361,7 @@ def run_build_all(args: argparse.Namespace) -> None:
         shard_index=int(args.shard_index),
         num_shards=int(args.num_shards),
     )
+    log_progress("CLI", f"manifest 写出完成 family_count={len(families)} manifest={manifest_path}")
     if bool(args.lane_only):
         include_lane = True
         include_intersection_boundary = False
@@ -386,41 +398,46 @@ def run_build_all(args: argparse.Namespace) -> None:
         stageb_system_prompt=stageb_system_prompt,
         stageb_prompt_template=str(args.stageb_prompt_template),
     )
+    log_progress("CLI", f"stage 导出完成 stage_a_root={export_result['stage_a_root']} stage_b_root={export_result['stage_b_root']}")
     if not bool(args.skip_fixed16_build):
-        build_fixed16_dataset(
-            input_root=Path(export_result["stage_a_root"]),
-            output_root=output_root / str(args.fixed16_output_name).strip(),
-            splits=split_list,
-            grid_size=int(args.fixed16_grid_size),
-            target_empty_ratio=float(args.fixed16_target_empty_ratio),
-            target_empty_ratio_by_split={"val": 1.0},
-            seed=int(args.fixed16_seed),
-            max_source_samples_per_split=int(args.fixed16_max_source_samples_per_split),
-            boundary_tol_px=float(args.fixed16_boundary_tol_px),
-            resample_step_px=float(args.fixed16_resample_step_px),
-            reuse_system_prompt=True,
-            image_root_mode=str(args.fixed16_image_root_mode),
-            export_visualizations=bool(args.fixed16_export_visualizations),
-            max_visualizations_per_split=int(args.fixed16_max_visualizations_per_split),
-        )
-        build_fixed16_dataset(
-            input_root=Path(export_result["stage_b_root"]),
-            output_root=output_root / str(args.fixed16_stageb_output_name).strip(),
-            splits=split_list,
-            grid_size=int(args.fixed16_grid_size),
-            target_empty_ratio=float(args.fixed16_target_empty_ratio),
-            target_empty_ratio_by_split={"val": 1.0},
-            seed=int(args.fixed16_seed),
-            max_source_samples_per_split=int(args.fixed16_max_source_samples_per_split),
-            boundary_tol_px=float(args.fixed16_boundary_tol_px),
-            resample_step_px=float(args.fixed16_resample_step_px),
-            reuse_system_prompt=True,
-            image_root_mode=str(args.fixed16_image_root_mode),
-            export_visualizations=bool(args.fixed16_export_visualizations),
-            max_visualizations_per_split=int(args.fixed16_max_visualizations_per_split),
-        )
+        log_progress("CLI", "开始并行构建 fixed16_stage_a 和 fixed16_stage_b")
+        fixed16_jobs = [
+            {
+                "input_root": Path(export_result["stage_a_root"]),
+                "output_root": output_root / str(args.fixed16_output_name).strip(),
+            },
+            {
+                "input_root": Path(export_result["stage_b_root"]),
+                "output_root": output_root / str(args.fixed16_stageb_output_name).strip(),
+            },
+        ]
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [
+                executor.submit(
+                    build_fixed16_dataset,
+                    input_root=job["input_root"],
+                    output_root=job["output_root"],
+                    splits=split_list,
+                    grid_size=int(args.fixed16_grid_size),
+                    target_empty_ratio=float(args.fixed16_target_empty_ratio),
+                    target_empty_ratio_by_split={"val": 1.0},
+                    seed=int(args.fixed16_seed),
+                    max_source_samples_per_split=int(args.fixed16_max_source_samples_per_split),
+                    boundary_tol_px=float(args.fixed16_boundary_tol_px),
+                    resample_step_px=float(args.fixed16_resample_step_px),
+                    reuse_system_prompt=True,
+                    image_root_mode=str(args.fixed16_image_root_mode),
+                    export_visualizations=bool(args.fixed16_export_visualizations),
+                    max_visualizations_per_split=int(args.fixed16_max_visualizations_per_split),
+                )
+                for job in fixed16_jobs
+            ]
+            for future in futures:
+                future.result()
+        log_progress("CLI", "fixed16 两个分支构建完成")
     print(f"Built full pipeline under: {output_root}", flush=True)
     print(f"Manifest: {manifest_path}", flush=True)
+    log_progress("CLI", f"build-all 完成 output_root={output_root}")
 
 
 def main() -> None:

@@ -46,6 +46,13 @@
 - build-fixed16
 - build-all
 
+当前长流程已经补了可见进度日志：
+
+- manifest 构建会打印 split、样本数、当前样本和 patch 数
+- stage 导出会打印 family 级进度和 split 级汇总
+- fixed16 会打印 split 级进度和 source sample 级进度
+- build-all 会打印每个大阶段的开始和结束时间点
+
 当前还未补齐的子系统：
 
 - reconstruct-processed
@@ -483,6 +490,13 @@ bash dataset_generation/run_build_all_default.sh
 
 ## 参数说明
 
+默认值里的几种写法说明：
+
+- 无：必须显式传入，否则命令不能执行
+- 空：默认不设置，程序会走回退逻辑或按其他参数推断
+- 关闭：这是布尔开关，默认 false，传入参数后才会开启
+- 内置默认文案：会使用 common/defaults.py 中定义的默认 prompt 文本
+
 先看这一节：
 
 - build-manifest：原始 train/val -> family_manifest.jsonl
@@ -659,6 +673,12 @@ build-all 的额外行为：
 - stage 导出时，val 的空 patch 不会被丢弃
 - fixed16 导出时，val 的空 box 会全部保留
 - 不传任何参数时，也可以直接跑默认全流程
+
+并行与加速说明：
+
+- build-all 里会并行构建 fixed16_stage_a 和 fixed16_stage_b，减少总等待时间
+- 当前没有加入 GPU 加速，因为这条链路主要是 GeoTIFF 读取、坐标转换、JSON 组织和图片写盘，瓶颈在 CPU 与磁盘 I/O，不在张量计算
+- 如果后续要进一步加速，优先考虑的是 CPU 多进程和磁盘吞吐，而不是直接上 GPU
 
 ## 使用示例
 

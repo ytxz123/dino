@@ -11,6 +11,7 @@ from dataset_generation.common.defaults import (
     DEFAULT_STAGE_B_SYSTEM_PROMPT,
 )
 from dataset_generation.common.io_utils import build_sharegpt_dataset_info, ensure_directory, load_jsonl, write_json, write_jsonl
+from dataset_generation.common.progress import log_progress
 from dataset_generation.common.state_mix import build_sample_rng, build_state_lines_by_mode, choose_state_mode
 from dataset_generation.stages.features import (
     build_owned_segments_by_patch,
@@ -96,6 +97,13 @@ def export_stage_datasets(
     split_records: Dict[str, List[Dict]] = {str(split): [] for split in splits}
     family_seen: Dict[str, int] = {str(split): 0 for split in splits}
     family_exported: Dict[str, int] = {str(split): 0 for split in splits}
+    split_family_targets = {
+        split_name: sum(1 for family in families if str(family.get("split", "")) == split_name)
+        for split_name in split_set
+    }
+    for split_name in splits:
+        split_text = str(split_name)
+        log_progress("Stage", f"开始处理 split={split_text} family_count={split_family_targets.get(split_text, 0)}")
     for family in families:
         split = str(family.get("split", ""))
         if split not in split_set:
@@ -104,6 +112,10 @@ def export_stage_datasets(
         if int(max_families_per_split) > 0 and family_seen[split] > int(max_families_per_split):
             continue
         family_exported[split] += 1
+        log_progress(
+            "Stage",
+            f"split={split} family={family_exported[split]}/{min(split_family_targets.get(split, 0), int(max_families_per_split)) if int(max_families_per_split) > 0 else split_family_targets.get(split, 0)} family_id={family.get('family_id', '')}",
+        )
         raw_image_hwc, raster_meta, _ = load_family_raster_and_mask(
             family=family,
             band_indices=[int(index) for index in band_indices],
@@ -238,6 +250,10 @@ def export_stage_datasets(
                     "stageb_meta": stageb_meta,
                 }
             )
+        log_progress(
+            "Stage",
+            f"split={split} family_id={family.get('family_id', '')} patch_count={len(family.get('patches', []))} 已完成导出",
+        )
     filter_summary: Dict[str, Dict[str, float]] = {}
     stagea_summary: Dict[str, Dict[str, int]] = {}
     stageb_summary: Dict[str, Dict[str, int]] = {}
@@ -266,6 +282,10 @@ def export_stage_datasets(
             "samples": int(write_jsonl(stage_b_root / f"{split_name}.jsonl", stageb_rows)),
             "meta_samples": int(write_jsonl(stage_b_root / f"meta_{split_name}.jsonl", stageb_meta)),
         }
+        log_progress(
+            "Stage",
+            f"split={split_name} stage_a_samples={stagea_summary[split_name]['samples']} stage_b_samples={stageb_summary[split_name]['samples']} empty_kept={filter_summary[split_name]['kept_empty']}",
+        )
     write_json(stage_a_root / "dataset_info.json", build_sharegpt_dataset_info(stage_a_root, prefix="unimapgen_geo_current_patch_only", splits=splits))
     write_json(stage_b_root / "dataset_info.json", build_sharegpt_dataset_info(stage_b_root, prefix="unimapgen_geo_current_state", splits=splits))
     write_json(
