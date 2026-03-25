@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Sequence
 
 import json
 
@@ -25,8 +25,9 @@ from unimapgen.dataset_build_refactor.tiling import (
 )
 
 
-DEFAULT_IMAGE_RELPATH = "patch_tif/0.tif"
-DEFAULT_MASK_RELPATH = "patch_tif/0_edit_poly.tif"
+DEFAULT_IMAGE_DIR_RELPATH = "patch_tif"
+DEFAULT_IMAGE_GLOB = "*.tif"
+DEFAULT_MASK_SUFFIX = "_edit_poly.tif"
 DEFAULT_LANE_RELPATH = "label_check_crop/Lane.geojson"
 DEFAULT_INTERSECTION_RELPATH = "label_check_crop/Intersection.geojson"
 
@@ -38,8 +39,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--val-root", type=str, default="")
     parser.add_argument("--output-manifest", type=str, required=True)
     parser.add_argument("--splits", type=str, nargs="+", default=["train", "val"])
-    parser.add_argument("--image-relpath", type=str, default=DEFAULT_IMAGE_RELPATH)
-    parser.add_argument("--mask-relpath", type=str, default=DEFAULT_MASK_RELPATH)
+    parser.add_argument("--image-relpath", type=str, default="")
+    parser.add_argument("--mask-relpath", type=str, default="")
+    parser.add_argument("--image-dir-relpath", type=str, default=DEFAULT_IMAGE_DIR_RELPATH)
+    parser.add_argument("--image-glob", type=str, default=DEFAULT_IMAGE_GLOB)
+    parser.add_argument("--mask-suffix", type=str, default=DEFAULT_MASK_SUFFIX)
     parser.add_argument("--lane-relpath", type=str, default=DEFAULT_LANE_RELPATH)
     parser.add_argument("--intersection-relpath", type=str, default=DEFAULT_INTERSECTION_RELPATH)
     parser.add_argument("--mask-threshold", type=int, default=127)
@@ -66,12 +70,34 @@ def resolve_split_root(*, split: str, dataset_root: Path | None, train_root: str
     return (dataset_root / split).resolve()
 
 
-def build_family_for_sample(
+def resolve_image_mask_pairs(*, sample_dir: Path, image_relpath: str, mask_relpath: str, image_dir_relpath: str, image_glob: str, mask_suffix: str) -> List[tuple[Path, Path]]:
+    if str(image_relpath).strip():
+        image_path = sample_dir / str(image_relpath)
+        mask_path = sample_dir / str(mask_relpath) if str(mask_relpath).strip() else Path("")
+        return [(image_path, mask_path)]
+
+    image_dir = sample_dir / str(image_dir_relpath)
+    if not image_dir.is_dir():
+        log_warning("Manifest", f"sample={sample_dir.name} skip missing image dir path={image_dir}")
+        return []
+
+    pairs: List[tuple[Path, Path]] = []
+    for image_path in sorted(image_dir.glob(str(image_glob))):
+        if not image_path.is_file():
+            continue
+        if str(image_path.name).endswith(str(mask_suffix)):
+            continue
+        mask_path = image_path.with_name(f"{image_path.stem}{mask_suffix}") if str(mask_suffix).strip() else Path("")
+        pairs.append((image_path, mask_path))
+    return pairs
+
+
+def build_family_for_image(
     *,
     split: str,
     sample_dir: Path,
-    image_relpath: str,
-    mask_relpath: str,
+    image_path: Path,
+    mask_path: Path,
     lane_relpath: str,
     intersection_relpath: str,
     mask_threshold: int,
@@ -85,11 +111,9 @@ def build_family_for_sample(
     search_within_review_bbox: bool,
     fallback_to_all_if_empty: bool,
 ) -> Dict | None:
-    image_path = sample_dir / image_relpath
     if not image_path.is_file():
         log_warning("Manifest", f"sample={sample_dir.name} skip missing image path={image_path}")
         return None
-    mask_path = sample_dir / mask_relpath
     lane_path = sample_dir / lane_relpath
     intersection_path = sample_dir / intersection_relpath
     try:
@@ -144,8 +168,9 @@ def build_family_for_sample(
             }
         )
     sample_id = str(sample_dir.name)
+    image_tag = str(image_path.stem)
     return {
-        "family_id": f"{sample_id}__rc_tiles",
+        "family_id": f"{sample_id}__{image_tag}__rc_tiles",
         "split": str(split),
         "source_sample_id": sample_id,
         "source_image": image_path.name,
@@ -198,36 +223,48 @@ def main() -> None:
             if index == 1 or index == len(sample_dirs) or index % 20 == 0:
                 log_event("Manifest", f"split={split} sample_progress={format_progress(index, len(sample_dirs))} sample_id={sample_dir.name}")
             try:
-                family = build_family_for_sample(
-                    split=split,
+                image_mask_pairs = resolve_image_mask_pairs(
                     sample_dir=sample_dir,
                     image_relpath=str(args.image_relpath),
                     mask_relpath=str(args.mask_relpath),
-                    lane_relpath=str(args.lane_relpath),
-                    intersection_relpath=str(args.intersection_relpath),
-                    mask_threshold=int(args.mask_threshold),
-                    tile_size_px=int(args.tile_size_px),
-                    overlap_px=int(args.overlap_px),
-                    keep_margin_px=int(args.keep_margin_px),
-                    review_crop_pad_px=int(args.review_crop_pad_px),
-                    tile_min_mask_ratio=float(args.tile_min_mask_ratio),
-                    tile_min_mask_pixels=int(args.tile_min_mask_pixels),
-                    tile_max_per_sample=int(args.tile_max_per_sample),
-                    search_within_review_bbox=bool(args.search_within_review_bbox),
-                    fallback_to_all_if_empty=bool(args.fallback_to_all_if_empty),
+                    image_dir_relpath=str(args.image_dir_relpath),
+                    image_glob=str(args.image_glob),
+                    mask_suffix=str(args.mask_suffix),
                 )
+                if not image_mask_pairs:
+                    log_warning("Manifest", f"split={split} sample_id={sample_dir.name} has no valid tif image pairs")
+                    continue
+                for image_path, mask_path in image_mask_pairs:
+                    family = build_family_for_image(
+                        split=split,
+                        sample_dir=sample_dir,
+                        image_path=image_path,
+                        mask_path=mask_path,
+                        lane_relpath=str(args.lane_relpath),
+                        intersection_relpath=str(args.intersection_relpath),
+                        mask_threshold=int(args.mask_threshold),
+                        tile_size_px=int(args.tile_size_px),
+                        overlap_px=int(args.overlap_px),
+                        keep_margin_px=int(args.keep_margin_px),
+                        review_crop_pad_px=int(args.review_crop_pad_px),
+                        tile_min_mask_ratio=float(args.tile_min_mask_ratio),
+                        tile_min_mask_pixels=int(args.tile_min_mask_pixels),
+                        tile_max_per_sample=int(args.tile_max_per_sample),
+                        search_within_review_bbox=bool(args.search_within_review_bbox),
+                        fallback_to_all_if_empty=bool(args.fallback_to_all_if_empty),
+                    )
+                    if family is None:
+                        continue
+                    families.append(family)
+                    family_count += 1
+                    patch_count += len(family["patches"])
             except Exception as exc:
                 log_error("Manifest", f"split={split} sample_id={sample_dir.name} failed: {exc}")
                 raise
-            if family is None:
-                continue
-            families.append(family)
-            family_count += 1
-            patch_count += len(family["patches"])
         split_counts[split] = {"families": family_count, "patches": patch_count, "samples_scanned": len(sample_dirs)}
         log_event("Manifest", f"split={split} done families={family_count} patches={patch_count}")
     if not families:
-        raise RuntimeError("No family records were generated. Check input roots, image-relpath, and mask filter thresholds.")
+        raise RuntimeError("No family records were generated. Check input roots, patch_tif directory contents, and mask filter thresholds.")
     family_count = write_jsonl(output_manifest, families)
     summary = {
         "dataset_root": str(dataset_root) if dataset_root is not None else "",

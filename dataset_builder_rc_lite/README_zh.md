@@ -20,20 +20,26 @@
 sample_xxx/
 ├── patch_tif/
 │   ├── 0.tif
-│   └── 0_edit_poly.tif
+│   ├── 0_edit_poly.tif
+│   ├── 1.tif
+│   ├── 1_edit_poly.tif
+│   └── ...
 └── label_check_crop/
     ├── Lane.geojson
     └── Intersection.geojson
 ```
 
-默认相对路径：
+默认处理逻辑：
 
-- image-relpath: patch_tif/0.tif
-- mask-relpath: patch_tif/0_edit_poly.tif
+- 默认扫描 patch_tif 目录下所有原始 tif。
+- 会自动忽略 *_edit_poly.tif 这类 mask 文件本身。
+- 对每个原始 tif，会自动寻找同名 mask，例如：
+  - 0.tif 对应 0_edit_poly.tif
+  - 1.tif 对应 1_edit_poly.tif
 - lane-relpath: label_check_crop/Lane.geojson
 - intersection-relpath: label_check_crop/Intersection.geojson
 
-如果你的目录不同，可以通过脚本参数覆盖。
+如果你的目录不同，或者你只想强制处理单个 tif，也可以通过脚本参数覆盖。
 
 ## 核心改造说明
 
@@ -369,176 +375,186 @@ fixed16_stage_b_rc/
 
 ## 参数详解
 
-### build_rc_family_manifest.py
+这里只解释一键运行脚本 [scripts/run_build_all_default.py](scripts/run_build_all_default.py) 顶部的 CONFIG 参数。
 
-输入相关：
+### 数据输入参数
 
-- --dataset-root
-  - 数据根目录，默认按 root/train 和 root/val 查找。
-- --train-root
+- dataset_root
+  - 数据总根目录。
+  - 当 train 和 val 都在同一个根目录下时使用。
+  - 目录通常应满足 dataset_root/train 和 dataset_root/val。
+
+- train_root
   - 单独指定 train 目录。
-- --val-root
+  - 如果填写了它，就不必依赖 dataset_root/train。
+
+- val_root
   - 单独指定 val 目录。
-- --output-manifest
-  - 输出 manifest 路径，必填。
-- --splits
-  - 要扫描的 split，默认 train val。
+  - 如果填写了它，就不必依赖 dataset_root/val。
 
-路径相关：
+### 输出参数
 
-- --image-relpath
-  - 样本内影像相对路径。
-- --mask-relpath
-  - 样本内审核 mask 相对路径。
-- --lane-relpath
-  - 样本内 lane GeoJSON 相对路径。
-- --intersection-relpath
-  - 样本内 intersection GeoJSON 相对路径。
+- output_root
+  - 一键脚本的总输出目录。
+  - manifest、patch-only、fixed16 Stage A、Stage B 都会输出到这个目录下。
 
-滑窗相关：
+### 数据口径参数
 
-- --tile-size-px
-  - patch 尺寸。
-- --overlap-px
-  - patch 间重叠像素。
-- --keep-margin-px
-  - keep_box 收缩边距。
-- --review-crop-pad-px
-  - review mask bbox 外扩像素。
+- lane_only
+  - 是否只导出 lane_line。
+  - True 时不会把 intersection_polygon 写入数据集。
+  - False 时同时导出 lane_line 和 intersection_polygon。
 
-筛选相关：
+- splits
+  - 要处理的 split 列表。
+  - 默认是 train 和 val。
 
-- --mask-threshold
-  - 二值化 mask 的阈值。
-- --tile-min-mask-ratio
-  - patch 内最小 mask 占比。
-- --tile-min-mask-pixels
-  - patch 内最小 mask 像素数。
-- --tile-max-per-sample
-  - 每个样本最多保留多少 patch，0 表示不限制。
-- --search-within-review-bbox
-  - 先按 review mask bbox 缩小搜索范围。
-- --fallback-to-all-if-empty
-  - 如果筛选后一个 patch 都没有，退回全部候选窗口。
-- --max-samples-per-split
-  - 每个 split 最多扫描多少个样本，0 表示不限制。
+### 样本路径参数
 
-### export_llamafactory_patch_only_from_raw_family_manifest.py
+- image_relpath
+  - 可选。
+  - 如果填写，表示强制只处理单个 tif 文件。
+  - 适用于你想只处理某一个固定影像的场景。
 
-输入输出：
+- mask_relpath
+  - 可选。
+  - 当 image_relpath 被填写时，可同时指定对应 mask 的相对路径。
 
-- --family-manifest
-  - 上一步生成的 family_manifest.jsonl。
-- --output-root
-  - patch-only 输出目录。
-- --splits
-  - 导出的 split。
+- image_dir_relpath
+  - 默认影像目录相对路径。
+  - 默认值是 patch_tif。
+  - 一键脚本会在这个目录下扫描多个 tif。
 
-影像和几何处理：
+- image_glob
+  - 扫描原始 tif 时使用的文件匹配模式。
+  - 默认是 *.tif。
 
-- --band-indices
-  - GeoTIFF 读取波段，默认 1 2 3。
-- --mask-threshold
-  - review mask 阈值。
-- --resample-step-px
-  - 线段重采样步长。
-- --boundary-tol-px
-  - 边界 cut 判定容差。
+- mask_suffix
+  - 原始 tif 对应 mask 的文件名后缀。
+  - 默认是 _edit_poly.tif。
+  - 例如 1.tif 会自动匹配 1_edit_poly.tif。
 
-类别控制：
+- lane_relpath
+  - 每个样本目录中 Lane.geojson 的相对路径。
 
-- --lane-only
-  - 只导出 lane_line。
-- --include-lane
-  - 显式启用 lane。
-- --include-intersection-boundary
-  - 显式启用 intersection_polygon。
+- intersection_relpath
+  - 每个样本目录中 Intersection.geojson 的相对路径。
 
-采样控制：
+### manifest 构建参数
 
-- --max-families-per-split
+- mask_threshold
+  - review mask 二值化阈值。
+
+- tile_size_px
+  - manifest 阶段 patch 的尺寸。
+
+- overlap_px
+  - 相邻 patch 之间的重叠像素。
+
+- keep_margin_px
+  - keep_box 相对 crop_box 向内收缩的边距。
+
+- review_crop_pad_px
+  - 如果按 review bbox 缩小搜索区域，会在 bbox 基础上额外外扩的像素。
+
+- tile_min_mask_ratio
+  - patch 内 mask 占比最低阈值。
+
+- tile_min_mask_pixels
+  - patch 内 mask 像素数最低阈值。
+
+- tile_max_per_sample
+  - 每个样本最多保留多少个 patch。
+  - 0 表示不限制。
+
+- search_within_review_bbox
+  - 是否先根据 review mask 的最小外接框缩小滑窗搜索区域。
+
+- fallback_to_all_if_empty
+  - 如果按 mask 条件筛选后一个 patch 都没有，是否退回全部候选窗口。
+
+- max_samples_per_split
+  - 每个 split 最多处理多少个样本。
+  - 0 表示不限制。
+
+### patch-only 参数
+
+- band_indices
+  - 读取 GeoTIFF 时使用的波段顺序。
+  - 默认 1, 2, 3。
+
+- patch_resample_step_px
+  - patch-only 阶段线段重采样步长。
+
+- patch_boundary_tol_px
+  - patch-only 阶段边界 cut 判定容差。
+
+- max_families_per_split
   - 每个 split 最多处理多少个 family。
-- --empty-patch-drop-ratio
-  - 空 patch 丢弃比例。
-- --empty-patch-seed
-  - 空 patch 采样随机种子。
+  - 0 表示不限制。
 
-Prompt：
+- empty_patch_drop_ratio
+  - patch-only 阶段空 patch 丢弃比例。
 
-- --use-system-prompt
-  - 使用内置 system prompt。
-- --system-prompt
-  - 直接传入 system prompt 文本。
-- --system-prompt-file
-  - 从文件读取 system prompt。
+- empty_patch_seed
+  - patch-only 阶段空 patch 随机采样种子。
 
-### build_patch_only_fixed_grid_targetbox_dataset.py
+- use_patch_system_prompt
+  - 是否在 patch-only 阶段启用内置 system prompt。
 
-输入输出：
+### fixed16 Stage A 参数
 
-- --input-root
-  - patch-only 数据集目录。
-- --output-root
-  - fixed16 输出目录。
-- --splits
-  - 处理哪些 split。
+- fixed16_grid_size
+  - patch 每边切分成多少格。
+  - 默认 4，对应 16 个 box。
 
-box 任务：
+- fixed16_target_empty_ratio
+  - fixed16 阶段最终允许保留的空 box 占比上限。
 
-- --grid-size
-  - patch 每边切多少格，默认 4，得到 16 个 box。
-- --resample-step-px
-  - box 内目标线重采样步长。
-- --boundary-tol-px
-  - box 边界 cut 判定容差。
+- fixed16_seed
+  - fixed16 空 box 采样种子。
 
-采样：
+- fixed16_resample_step_px
+  - fixed16 阶段 box 内目标线重采样步长。
 
-- --target-empty-ratio
-  - 最终空 box 占比上限。
-- --seed
-  - 空 box 采样随机种子。
+- fixed16_boundary_tol_px
+  - fixed16 阶段 box 边界 cut 判定容差。
 
-其他：
+- fixed16_use_system_prompt_from_source
+  - 是否继承 patch-only 阶段的 system prompt。
 
-- --use-system-prompt-from-source
-  - 继承 patch-only 中的 system prompt。
-- --image-root-mode
-  - 输出 images 目录的暴露方式，支持 symlink、copy、none。
+- fixed16_image_root_mode
+  - fixed16 输出目录如何暴露 images。
+  - 可选值：symlink、copy、none。
 
-### build_stageb_fixed16_gt_point_angle_dataset.py
+### Stage B 参数
 
-输入输出：
+- stageb_grid_size
+  - Stage B 重建子 patch 邻接关系时使用的网格大小。
 
-- --input-root
-  - fixed16 Stage A 数据集目录。
-- --output-root
-  - Stage B 输出目录。
-- --splits
-  - 处理哪些 split。
+- stageb_boundary_tol_px
+  - Stage B 判断邻接 trace 是否触边的容差。
 
-trace 控制：
+- stageb_trace_points_per_hint
+  - 每条 incoming trace 最多保留的点数。
 
-- --grid-size
-  - 用于重建 box 索引的网格大小。
-- --boundary-tol-px
-  - 判断邻居 box cut 点是否接到共享边界的容差。
-- --trace-points-per-hint
-  - 每条 incoming trace 最多保留多少点。
+- stageb_use_system_prompt_from_source
+  - 是否继承 fixed16 Stage A 的 system prompt。
 
-Prompt：
+- stageb_image_root_mode
+  - Stage B 输出目录如何暴露 images。
+  - 可选值：symlink、copy、none。
 
-- --use-system-prompt-from-source
-  - 优先沿用 Stage A 的 system prompt。
-- --system-prompt
-  - 手动覆盖 system prompt 文本。
-- --system-prompt-file
-  - 从文件读取 system prompt。
+### 最常修改的参数
 
-其他：
+如果你只是正常跑一套数据，通常优先改这些：
 
-- --image-root-mode
-  - images 目录暴露方式。
+1. dataset_root 或 train_root / val_root
+2. output_root
+3. lane_only
+4. band_indices
+5. max_samples_per_split
+6. max_families_per_split
 
 ## 常见错误与排查
 

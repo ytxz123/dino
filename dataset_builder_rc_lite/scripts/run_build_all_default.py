@@ -40,8 +40,11 @@ class BuildConfig:
     splits: List[str] = field(default_factory=lambda: ["train", "val"])
 
     # manifest 参数。
-    image_relpath: str = "patch_tif/0.tif"
-    mask_relpath: str = "patch_tif/0_edit_poly.tif"
+    image_relpath: str = ""
+    mask_relpath: str = ""
+    image_dir_relpath: str = "patch_tif"
+    image_glob: str = "*.tif"
+    mask_suffix: str = "_edit_poly.tif"
     lane_relpath: str = "label_check_crop/Lane.geojson"
     intersection_relpath: str = "label_check_crop/Intersection.geojson"
     mask_threshold: int = 127
@@ -126,10 +129,12 @@ def main() -> None:
         str(manifest_path),
         "--splits",
         *config.splits,
-        "--image-relpath",
-        config.image_relpath,
-        "--mask-relpath",
-        config.mask_relpath,
+        "--image-dir-relpath",
+        config.image_dir_relpath,
+        "--image-glob",
+        config.image_glob,
+        "--mask-suffix",
+        config.mask_suffix,
         "--lane-relpath",
         config.lane_relpath,
         "--intersection-relpath",
@@ -153,6 +158,10 @@ def main() -> None:
         "--max-samples-per-split",
         str(config.max_samples_per_split),
     ]
+    if config.image_relpath:
+        manifest_cmd.extend(["--image-relpath", config.image_relpath])
+    if config.mask_relpath:
+        manifest_cmd.extend(["--mask-relpath", config.mask_relpath])
     if config.train_root:
         manifest_cmd.extend(["--train-root", config.train_root])
     if config.val_root:
