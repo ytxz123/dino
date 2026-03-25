@@ -218,7 +218,11 @@ def canonicalize_line_direction(points_xy: np.ndarray, start_type: str, end_type
 
 def sort_lines(lines: List[Dict]) -> List[Dict]:
     def first_point(item: Dict) -> Sequence[float]:
-        points = item.get("points") or item.get("points_global") or [[1e9, 1e9]]
+        points = item.get("points")
+        if points is None or len(points) == 0:
+            points = item.get("points_global")
+        if points is None or len(points) == 0:
+            points = [[1e9, 1e9]]
         return points[0]
 
     return sorted(lines, key=lambda item: (*point_origin_sort_key(first_point(item)), int(item.get("source_patch", 1_000_000_000))))
