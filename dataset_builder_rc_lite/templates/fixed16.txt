@@ -1,0 +1,4 @@
+<image>
+Task: reconstruct the road-structure map inside target box [{box_x_min},{box_y_min},{box_x_max},{box_y_max}].
+You may use the full satellite patch as visual context, but only return geometry that belongs to the target box.
+Keep all coordinates in the patch-local coordinate system.

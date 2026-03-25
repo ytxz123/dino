@@ -1,0 +1,4 @@
+<image>
+Task: reconstruct the complete road-structure map for the current satellite patch.
+Include every visible road line and intersection boundary that belongs to this patch.
+Use the full image as context and return the result in patch-local coordinates.
