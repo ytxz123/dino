@@ -35,6 +35,10 @@ PATCH_ONLY_SYSTEM_PROMPT = (
 )
 
 
+def resolve_patch_only_prompt(prompt_template: str = "") -> str:
+    return str(prompt_template).strip() or PATCH_ONLY_PROMPT_TEMPLATE
+
+
 def _line_piece_cut_flags_after_clip(source_points: np.ndarray, clipped_points: np.ndarray) -> Tuple[bool, bool]:
     source = np.asarray(source_points, dtype=np.float32)
     clipped = np.asarray(clipped_points, dtype=np.float32)
@@ -129,11 +133,11 @@ def build_patch_target_lines(segments_global: Sequence[Dict], patch: Dict, quant
     return sort_lines(output)
 
 
-def make_patch_only_record(*, sample_id: str, image_rel_path: str, target_lines: Sequence[Dict], system_prompt: str) -> Dict:
+def make_patch_only_record(*, sample_id: str, image_rel_path: str, target_lines: Sequence[Dict], system_prompt: str, user_prompt_text: str = "") -> Dict:
     return make_sharegpt_record(
         sample_id=sample_id,
         image_rel_path=image_rel_path,
-        user_text=PATCH_ONLY_PROMPT_TEMPLATE,
+        user_text=resolve_patch_only_prompt(user_prompt_text),
         assistant_payload={"lines": list(target_lines)},
         system_prompt=system_prompt,
     )

@@ -71,12 +71,17 @@ sample_xxx/
 
 ```text
 dataset_builder_rc_lite/
-├── README_zh.md
+├── README.md
 ├── scripts/
-│   ├── build_rc_family_manifest.py
-│   ├── export_llamafactory_patch_only_from_raw_family_manifest.py
-│   ├── build_patch_only_fixed_grid_targetbox_dataset.py
-│   └── build_stageb_fixed16_gt_point_angle_dataset.py
+│   ├── build_manifest.py
+│   ├── build_patch_only.py
+│   ├── build_fixed16.py
+│   ├── build_stageb.py
+│   └── run_all.py
+├── templates/
+│   ├── fixed16.txt
+│   ├── patch_only.txt
+│   └── stageb.txt
 └── unimapgen/
     └── dataset_build_refactor/
         ├── __init__.py
@@ -94,30 +99,30 @@ dataset_builder_rc_lite/
 
 ### 脚本层
 
-1. [scripts/build_rc_family_manifest.py](scripts/build_rc_family_manifest.py)
+1. [scripts/build_manifest.py](scripts/build_manifest.py)
 
 - 扫描 train/val 样本目录。
 - 读取 GeoTIFF 尺寸和 review mask。
 - 生成 RC 滑窗 patch。
 - 输出 family_manifest.jsonl。
 
-2. [scripts/export_llamafactory_patch_only_from_raw_family_manifest.py](scripts/export_llamafactory_patch_only_from_raw_family_manifest.py)
+2. [scripts/build_patch_only.py](scripts/build_patch_only.py)
 
 - 读取 family manifest。
 - 从 GeoJSON 解析 lane 和 intersection。
 - 生成 patch 图像与 patch-local target_lines。
 - 输出 patch-only ShareGPT 数据集。
 
-3. [scripts/build_patch_only_fixed_grid_targetbox_dataset.py](scripts/build_patch_only_fixed_grid_targetbox_dataset.py)
+3. [scripts/build_fixed16.py](scripts/build_fixed16.py)
 
 - 从 patch-only 样本展开 fixed16 box 任务。
 - 为每个 box 生成 prompt anchor 和 box 内 target_lines。
 - 按空样本比例控制 empty 样本保留量。
 
-4. [scripts/build_stageb_fixed16_gt_point_angle_dataset.py](scripts/build_stageb_fixed16_gt_point_angle_dataset.py)
+4. [scripts/build_stageb.py](scripts/build_stageb.py)
 
-- 从 fixed16 Stage A 样本重建左邻 / 上邻 trace。
-- 输出带 incoming trace prompt 的 Stage B 样本。
+- 从 fixed16 Stage A 样本构建 Stage B 数据集。
+- 默认输出 no-state 版本；只有显式开启 gt 模式时才会额外构建邻块 trace 提示。
 
 ### helper 层
 
@@ -185,26 +190,35 @@ dataset_builder_rc_lite/
 
 如果你希望只改少量默认配置，然后一键串联执行四步主链，可以直接使用：
 
-[scripts/run_build_all_default.py](scripts/run_build_all_default.py)
+[scripts/run_all.py](scripts/run_all.py)
 
 使用方法：
 
-1. 打开 [scripts/run_build_all_default.py](scripts/run_build_all_default.py)
+1. 打开 [scripts/run_all.py](scripts/run_all.py)
 2. 修改顶部的 CONFIG，至少填写：
   - dataset_root
   - 或 train_root / val_root
 3. 运行：
 
 ```bash
-python dataset_builder_rc_lite/scripts/run_build_all_default.py
+python dataset_builder_rc_lite/scripts/run_all.py
 ```
 
 这个脚本会依次执行：
 
-1. build_rc_family_manifest.py
-2. export_llamafactory_patch_only_from_raw_family_manifest.py
-3. build_patch_only_fixed_grid_targetbox_dataset.py
-4. build_stageb_fixed16_gt_point_angle_dataset.py
+1. build_manifest.py
+2. build_patch_only.py
+3. build_fixed16.py
+4. build_stageb.py
+
+在真正启动四步主链之前，一键脚本还会先做一次模板预检查：
+
+- 检查模板文件是否存在
+- 检查模板文件是否为空
+- 检查 fixed16 和 Stage B 模板中的占位符是否完整且合法
+- 检查 patch-only 模板里是否误写了不会被替换的格式化占位符
+
+默认模板文件已经放在 [dataset_builder_rc_lite/templates/patch_only.txt](dataset_builder_rc_lite/templates/patch_only.txt)、[dataset_builder_rc_lite/templates/fixed16.txt](dataset_builder_rc_lite/templates/fixed16.txt)、[dataset_builder_rc_lite/templates/stageb.txt](dataset_builder_rc_lite/templates/stageb.txt)。其中 Stage B 这份文件对应推荐默认的 no-state 写法；如果你不填写 stageb_user_prompt_file，脚本会直接按 stageb_state_mode 选择内置默认模板。
 
 默认输出目录结构：
 
@@ -227,14 +241,89 @@ dataset_builder_rc_lite_output/
 - fixed16_grid_size
 - stageb_trace_points_per_hint
 
+其中与 prompt 相关的新增配置有：
+
+- patch_user_prompt_file
+- fixed16_user_prompt_file
+- stageb_user_prompt_file
+
+其中 patch_user_prompt_file 和 fixed16_user_prompt_file 默认已经指向项目内置模板文件；Stage B 推荐默认留空，让脚本按 stageb_state_mode 自动选择内置模板。
+
 如果只是常规跑数，通常只需要改数据路径和 lane_only。
+
+## 一键脚本参数说明
+
+只需要修改 [scripts/run_all.py](scripts/run_all.py) 顶部的 CONFIG。
+
+常用参数含义如下。
+
+- dataset_root: 统一数据根目录，内部应包含 train 和 val。
+- train_root: 单独指定 train 目录；填写后可覆盖 dataset_root 的 train 路径推导。
+- val_root: 单独指定 val 目录；填写后可覆盖 dataset_root 的 val 路径推导。
+- output_root: 四步主链的总输出目录。
+- lane_only: 为 true 时只导出 lane_line，不导出 intersection_polygon。
+- splits: 需要处理的 split 列表，默认是 train 和 val。
+
+- image_dir_relpath: 每个样本内原始 tif 所在目录，默认是 patch_tif。
+- image_glob: 在 image_dir_relpath 下扫描原始 tif 的匹配规则，默认是 *.tif。
+- mask_suffix: 原始 tif 对应 review mask 的文件名后缀，默认是 _edit_poly.tif。
+- lane_relpath: 车道 GeoJSON 相对路径。
+- intersection_relpath: 路口 GeoJSON 相对路径。
+
+- tile_size_px: manifest 阶段滑窗大小。
+- overlap_px: 相邻滑窗重叠像素。
+- keep_margin_px: keep_box 的边缘收缩宽度。
+- review_crop_pad_px: review 区域外扩像素。
+- tile_min_mask_ratio: patch 至少需要满足的 mask 覆盖比例。
+- tile_min_mask_pixels: patch 至少需要满足的 mask 像素数。
+
+- patch_resample_step_px: patch-only 阶段折线重采样步长。
+- patch_boundary_tol_px: patch-only 阶段边界 cut 判定容差。
+- empty_patch_drop_ratio: patch-only 阶段空样本丢弃比例。
+
+- fixed16_grid_size: fixed16 阶段网格边长，4 表示切成 4x4 共 16 个 box。
+- fixed16_target_empty_ratio: fixed16 阶段最终保留的空样本比例目标。
+- fixed16_resample_step_px: fixed16 阶段 box 内折线重采样步长。
+- fixed16_boundary_tol_px: fixed16 阶段 box 边界 cut 判定容差。
+
+- stageb_grid_size: Stage B 默认网格大小，通常与 fixed16_grid_size 保持一致。
+- stageb_state_mode: Stage B 状态模式。推荐默认使用 none；只有在你明确要做“带邻块提示的条件续接任务”时才改成 gt。
+- stageb_boundary_tol_px: Stage B 邻块 trace 边界匹配容差。
+- stageb_trace_points_per_hint: 每条 incoming trace 最多保留多少个提示点。
+
+- patch_user_prompt_file: patch-only user prompt 模板文件路径。留空时使用内置默认模板。
+- fixed16_user_prompt_file: fixed16 user prompt 模板文件路径。留空时使用内置默认模板。
+- stageb_user_prompt_file: Stage B user prompt 模板文件路径。推荐默认留空，由脚本按 stageb_state_mode 自动选择内置模板；只有在你明确要自定义 Stage B prompt 时再填写。
+
+其中：
+
+- patch-only 模板是纯文本模板，不需要占位符。
+- fixed16 模板如果自定义，应只保留这些占位符：{box_x_min}、{box_y_min}、{box_x_max}、{box_y_max}。
+- 当 stageb_state_mode=none 时，Stage B 模板应只保留这些占位符：{box_x_min}、{box_y_min}、{box_x_max}、{box_y_max}。
+- 当 stageb_state_mode=gt 时，Stage B 模板应保留这些占位符：{box_x_min}、{box_y_min}、{box_x_max}、{box_y_max}、{trace_points_json}。
+- fixed16 模板不再允许引用 start_x、start_y、end_x、end_y，避免把由 GT 提取的锚点端点泄露给模型。
+- 如果模板里写了不存在的占位符，脚本会直接报错，便于及时定位模板问题。
+
+示例：
+
+```text
+<image>
+Reconstruct the road-structure line map inside target box [{box_x_min},{box_y_min},{box_x_max},{box_y_max}].
+Keep all coordinates in the patch-local coordinate system.
+```
+
+```text
+<image>
+Reconstruct the target road-structure line map inside target box [{box_x_min},{box_y_min},{box_x_max},{box_y_max}].
+Keep all coordinates in the patch-local coordinate system.
+```
 
 ### 1. 构建 family manifest
 
 最常见写法：
 
 ```bash
-python dataset_builder_rc_lite/scripts/build_rc_family_manifest.py \
+python dataset_builder_rc_lite/scripts/build_manifest.py \
   --dataset-root /path/to/rc_dataset \
   --output-manifest /path/to/output/family_manifest.jsonl
 ```
@@ -242,7 +331,7 @@ python dataset_builder_rc_lite/scripts/build_rc_family_manifest.py \
 当 train 和 val 分开存放时：
 
 ```bash
-python dataset_builder_rc_lite/scripts/build_rc_family_manifest.py \
+python dataset_builder_rc_lite/scripts/build_manifest.py \
   --train-root /path/to/train \
   --val-root /path/to/val \
   --output-manifest /path/to/output/family_manifest.jsonl
@@ -251,7 +340,7 @@ python dataset_builder_rc_lite/scripts/build_rc_family_manifest.py \
 ### 2. 导出 patch-only 数据集
 
 ```bash
-python dataset_builder_rc_lite/scripts/export_llamafactory_patch_only_from_raw_family_manifest.py \
+python dataset_builder_rc_lite/scripts/build_patch_only.py \
   --family-manifest /path/to/output/family_manifest.jsonl \
   --output-root /path/to/output/patch_only_rc
 ```
@@ -259,7 +348,7 @@ python dataset_builder_rc_lite/scripts/export_llamafactory_patch_only_from_raw_f
 只导出 lane_line：
 
 ```bash
-python dataset_builder_rc_lite/scripts/export_llamafactory_patch_only_from_raw_family_manifest.py \
+python dataset_builder_rc_lite/scripts/build_patch_only.py \
   --family-manifest /path/to/output/family_manifest.jsonl \
   --output-root /path/to/output/patch_only_rc_lane_only \
   --lane-only
@@ -268,7 +357,7 @@ python dataset_builder_rc_lite/scripts/export_llamafactory_patch_only_from_raw_f
 ### 3. 构建 fixed16 Stage A
 
 ```bash
-python dataset_builder_rc_lite/scripts/build_patch_only_fixed_grid_targetbox_dataset.py \
+python dataset_builder_rc_lite/scripts/build_fixed16.py \
   --input-root /path/to/output/patch_only_rc \
   --output-root /path/to/output/fixed16_stage_a_rc
 ```
@@ -276,7 +365,7 @@ python dataset_builder_rc_lite/scripts/build_patch_only_fixed_grid_targetbox_dat
 ### 4. 构建 Stage B
 
 ```bash
-python dataset_builder_rc_lite/scripts/build_stageb_fixed16_gt_point_angle_dataset.py \
+python dataset_builder_rc_lite/scripts/build_stageb.py \
   --input-root /path/to/output/fixed16_stage_a_rc \
   --output-root /path/to/output/fixed16_stage_b_rc
 ```
@@ -375,7 +464,7 @@ fixed16_stage_b_rc/
 
 ## 参数详解
 
-这里只解释一键运行脚本 [scripts/run_build_all_default.py](scripts/run_build_all_default.py) 顶部的 CONFIG 参数。
+这里只解释一键运行脚本 [scripts/run_all.py](scripts/run_all.py) 顶部的 CONFIG 参数。
 
 ### 数据输入参数
 

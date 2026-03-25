@@ -14,8 +14,12 @@ from .viz import draw_endpoint, draw_polyline
 
 
 STAGEB_TRACE_PROMPT_TEMPLATE = """<image>
-Please construct the target road map in the satellite image inside target box [{box_x_min},{box_y_min},{box_x_max},{box_y_max}],
-Incoming trace points: {trace_points_json}
+Reconstruct the target road-structure line map inside target box [{box_x_min},{box_y_min},{box_x_max},{box_y_max}].
+Incoming trace hints: {trace_points_json}
+Keep all coordinates in the patch-local coordinate system."""
+
+STAGEB_NO_STATE_PROMPT_TEMPLATE = """<image>
+Reconstruct the target road-structure line map inside target box [{box_x_min},{box_y_min},{box_x_max},{box_y_max}].
 Keep all coordinates in the patch-local coordinate system."""
 
 
@@ -114,15 +118,26 @@ def extract_state_points(*, source_group_meta: Dict[int, Dict], grid_size: int, 
     return deduped
 
 
-def format_stageb_trace_prompt(*, target_box: Dict[str, int], state_points: Sequence[Dict]) -> str:
+def format_stageb_trace_prompt(*, target_box: Dict[str, int], state_points: Sequence[Dict], prompt_template: str = "", state_mode: str = "gt") -> str:
     trace_points_json = json.dumps([{"points": [list(point) for point in item["points"]]} for item in state_points], ensure_ascii=False, separators=(",", ":"))
-    return STAGEB_TRACE_PROMPT_TEMPLATE.format(
-        box_x_min=int(target_box["x_min"]),
-        box_y_min=int(target_box["y_min"]),
-        box_x_max=int(target_box["x_max"]),
-        box_y_max=int(target_box["y_max"]),
-        trace_points_json=trace_points_json,
-    )
+    normalized_state_mode = str(state_mode).strip().lower()
+    if str(prompt_template).strip():
+        template = str(prompt_template).strip()
+    elif normalized_state_mode == "none":
+        template = STAGEB_NO_STATE_PROMPT_TEMPLATE
+    else:
+        template = STAGEB_TRACE_PROMPT_TEMPLATE
+    try:
+        return template.format(
+            box_x_min=int(target_box["x_min"]),
+            box_y_min=int(target_box["y_min"]),
+            box_x_max=int(target_box["x_max"]),
+            box_y_max=int(target_box["y_max"]),
+            trace_points_json=trace_points_json,
+        )
+    except KeyError as exc:
+        missing_key = str(exc).strip("'\"")
+        raise ValueError(f"Stage B prompt template contains an unknown placeholder: {missing_key}") from exc
 
 
 def save_stageb_visualization(*, patch_image: Image.Image, target_lines: Sequence[Dict], target_box: Dict[str, int], state_points: Sequence[Dict], out_path: Path) -> None:

@@ -1,0 +1,3 @@
+<image>
+Reconstruct the road-structure line map inside target box [{box_x_min},{box_y_min},{box_x_max},{box_y_max}].
+Keep all coordinates in the patch-local coordinate system.

@@ -13,7 +13,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from unimapgen.dataset_build_refactor.common import build_sharegpt_dataset_info, ensure_dir, extract_message_content, format_progress, link_or_copy_images, load_jsonl, log_event, require_existing_path, make_sharegpt_record, resolve_optional_text, write_jsonl
-from unimapgen.dataset_build_refactor.stageb import STAGEB_TRACE_PROMPT_TEMPLATE, extract_state_points, format_stageb_trace_prompt, safe_int
+from unimapgen.dataset_build_refactor.stageb import STAGEB_NO_STATE_PROMPT_TEMPLATE, STAGEB_TRACE_PROMPT_TEMPLATE, extract_state_points, format_stageb_trace_prompt, safe_int
 
 
 def parse_args() -> argparse.Namespace:
@@ -24,14 +24,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--grid-size", type=int, default=4)
     parser.add_argument("--boundary-tol-px", type=float, default=2.5)
     parser.add_argument("--trace-points-per-hint", type=int, default=3)
+    parser.add_argument("--state-mode", type=str, default="none", choices=["none", "gt"])
     parser.add_argument("--use-system-prompt-from-source", action="store_true")
     parser.add_argument("--system-prompt", type=str, default="")
     parser.add_argument("--system-prompt-file", type=str, default="")
+    parser.add_argument("--user-prompt", type=str, default="")
+    parser.add_argument("--user-prompt-file", type=str, default="")
     parser.add_argument("--image-root-mode", type=str, default="symlink", choices=["symlink", "copy", "none"])
     return parser.parse_args()
 
 
-def build_split(*, split: str, input_root: Path, output_root: Path, default_grid_size: int, boundary_tol_px: float, trace_points_per_hint: int, explicit_system_prompt: str, reuse_system_prompt: bool) -> Dict[str, object]:
+def build_split(*, split: str, input_root: Path, output_root: Path, default_grid_size: int, boundary_tol_px: float, trace_points_per_hint: int, explicit_system_prompt: str, reuse_system_prompt: bool, user_prompt_template: str, state_mode: str) -> Dict[str, object]:
     split_jsonl = input_root / f"{split}.jsonl"
     split_meta_jsonl = input_root / f"meta_{split}.jsonl"
     if not split_jsonl.exists() or not split_meta_jsonl.exists():
@@ -83,8 +86,11 @@ def build_split(*, split: str, input_root: Path, output_root: Path, default_grid
             continue
         image_rel_path = str(src_meta.get("image") or src_row.get("images", [""])[0])
         system_prompt = explicit_system_prompt if explicit_system_prompt else (extract_message_content(src_row, "system") if reuse_system_prompt else "")
-        state_points = extract_state_points(source_group_meta=source_group_meta.get(source_group_id, {}), grid_size=grid_size, grid_row=grid_row, grid_col=grid_col, patch_size=patch_size, boundary_tol_px=boundary_tol_px, trace_points_per_hint=trace_points_per_hint)
-        prompt_text = format_stageb_trace_prompt(target_box=target_box, state_points=state_points)
+        if str(state_mode).strip().lower() == "gt":
+            state_points = extract_state_points(source_group_meta=source_group_meta.get(source_group_id, {}), grid_size=grid_size, grid_row=grid_row, grid_col=grid_col, patch_size=patch_size, boundary_tol_px=boundary_tol_px, trace_points_per_hint=trace_points_per_hint)
+        else:
+            state_points = []
+        prompt_text = format_stageb_trace_prompt(target_box=target_box, state_points=state_points, prompt_template=user_prompt_template, state_mode=state_mode)
         row = make_sharegpt_record(sample_id=row_id, image_rel_path=image_rel_path, user_text=prompt_text, assistant_payload={"lines": list(target_lines)}, system_prompt=system_prompt)
         subpatch_id = int(grid_row) * int(grid_size) + int(grid_col)
         state_source_patch_ids = sorted({int(item["source_patch"]) for item in state_points})
@@ -102,7 +108,7 @@ def build_split(*, split: str, input_root: Path, output_root: Path, default_grid
             "image": image_rel_path,
             "crop_box": crop_box,
             "target_mode": str(src_meta.get("target_mode", "fixed_grid_target_box_map")),
-            "state_mode": "gt_neighbor_handoff_trace_points",
+            "state_mode": ("gt_neighbor_handoff_trace_points" if str(state_mode).strip().lower() == "gt" else "none"),
             "grid_size": int(grid_size),
             "grid_row": int(grid_row),
             "grid_col": int(grid_col),
@@ -158,6 +164,7 @@ def main() -> None:
     output_root = args.output_root.resolve()
     ensure_dir(output_root)
     explicit_system_prompt = resolve_optional_text(inline_text=str(args.system_prompt), file_path=str(args.system_prompt_file))
+    user_prompt_template = resolve_optional_text(inline_text=str(args.user_prompt), file_path=str(args.user_prompt_file))
     image_mode = link_or_copy_images(input_root=input_root, output_root=output_root, mode=str(args.image_root_mode))
     log_event("StageB", f"start input_root={input_root} output_root={output_root} grid_size={args.grid_size}")
     summary: Dict[str, object] = {
@@ -165,17 +172,17 @@ def main() -> None:
         "output_root": str(output_root),
         "grid_size": int(args.grid_size),
         "num_boxes_per_patch": int(args.grid_size) * int(args.grid_size),
-        "state_mode": "gt_neighbor_handoff_trace_points",
-        "state_neighbors": ["left", "top"],
+        "state_mode": ("gt_neighbor_handoff_trace_points" if str(args.state_mode).strip().lower() == "gt" else "none"),
+        "state_neighbors": (["left", "top"] if str(args.state_mode).strip().lower() == "gt" else []),
         "trace_points_per_hint": int(args.trace_points_per_hint),
         "boundary_tol_px": float(args.boundary_tol_px),
-        "prompt_template": STAGEB_TRACE_PROMPT_TEMPLATE,
+        "prompt_template": user_prompt_template or (STAGEB_TRACE_PROMPT_TEMPLATE if str(args.state_mode).strip().lower() == "gt" else STAGEB_NO_STATE_PROMPT_TEMPLATE),
         "image_root_mode": image_mode,
         "splits": {},
     }
     splits = [str(item) for item in args.splits]
     for split in splits:
-        summary["splits"][split] = build_split(split=split, input_root=input_root, output_root=output_root, default_grid_size=int(args.grid_size), boundary_tol_px=float(args.boundary_tol_px), trace_points_per_hint=int(args.trace_points_per_hint), explicit_system_prompt=explicit_system_prompt, reuse_system_prompt=bool(args.use_system_prompt_from_source))
+        summary["splits"][split] = build_split(split=split, input_root=input_root, output_root=output_root, default_grid_size=int(args.grid_size), boundary_tol_px=float(args.boundary_tol_px), trace_points_per_hint=int(args.trace_points_per_hint), explicit_system_prompt=explicit_system_prompt, reuse_system_prompt=bool(args.use_system_prompt_from_source), user_prompt_template=user_prompt_template, state_mode=str(args.state_mode))
         log_event("StageB", f"split={split} summary={summary['splits'][split]}")
     (output_root / "dataset_info.json").write_text(json.dumps(build_sharegpt_dataset_info(output_root=output_root, splits=splits), ensure_ascii=False, indent=2), encoding="utf-8")
     (output_root / "build_summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")

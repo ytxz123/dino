@@ -15,7 +15,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from unimapgen.dataset_build_refactor.common import ensure_dir, format_progress, load_jsonl, log_error, log_event, log_warning, require_existing_path, resolve_optional_text, validate_ratio, write_json, write_jsonl
-from unimapgen.dataset_build_refactor.patch_only import PATCH_ONLY_SYSTEM_PROMPT, build_patch_segments_global, build_patch_target_lines, make_patch_only_record
+from unimapgen.dataset_build_refactor.patch_only import PATCH_ONLY_PROMPT_TEMPLATE, PATCH_ONLY_SYSTEM_PROMPT, build_patch_segments_global, build_patch_target_lines, make_patch_only_record
 from unimapgen.dataset_build_refactor.rc_dataset import load_family_raster_and_mask, load_sample_global_features
 
 
@@ -37,6 +37,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--use-system-prompt", action="store_true")
     parser.add_argument("--system-prompt", type=str, default="")
     parser.add_argument("--system-prompt-file", type=str, default="")
+    parser.add_argument("--user-prompt", type=str, default="")
+    parser.add_argument("--user-prompt-file", type=str, default="")
     return parser.parse_args()
 
 
@@ -99,7 +101,7 @@ def downsample_empty_records(rows: Sequence[Dict], meta_rows: Sequence[Dict], dr
     return kept_rows, kept_meta, summary
 
 
-def export_split(*, split: str, families: Sequence[Dict], output_root: Path, band_indices: Sequence[int], mask_threshold: int, resample_step_px: float, boundary_tol_px: float, include_lane: bool, include_intersection_boundary: bool, max_families_per_split: int, empty_patch_drop_ratio: float, empty_patch_seed: int, system_prompt: str) -> Dict[str, object]:
+def export_split(*, split: str, families: Sequence[Dict], output_root: Path, band_indices: Sequence[int], mask_threshold: int, resample_step_px: float, boundary_tol_px: float, include_lane: bool, include_intersection_boundary: bool, max_families_per_split: int, empty_patch_drop_ratio: float, empty_patch_seed: int, system_prompt: str, user_prompt_text: str) -> Dict[str, object]:
     rows: List[Dict] = []
     meta_rows: List[Dict] = []
     family_count = 0
@@ -140,7 +142,7 @@ def export_split(*, split: str, families: Sequence[Dict], output_root: Path, ban
                 patch_image.save(out_image)
                 patch_image.close()
                 sample_id = f"{family['family_id']}_p{patch_id:04d}"
-                rows.append(make_patch_only_record(sample_id=sample_id, image_rel_path=image_rel.as_posix(), target_lines=target_lines, system_prompt=system_prompt))
+                rows.append(make_patch_only_record(sample_id=sample_id, image_rel_path=image_rel.as_posix(), target_lines=target_lines, system_prompt=system_prompt, user_prompt_text=user_prompt_text))
                 meta_rows.append(build_patch_only_meta_row(sample_id=sample_id, split=split, family=family, patch=patch, image_rel_path=image_rel.as_posix(), target_lines=target_lines, resample_step_px=float(resample_step_px), system_prompt=system_prompt))
         except Exception as exc:
             log_error("PatchOnly", f"split={split} family_id={family.get('family_id', '')} failed: {exc}")
@@ -169,12 +171,14 @@ def main() -> None:
         include_lane = True if (not bool(args.include_lane) and not bool(args.include_intersection_boundary)) else bool(args.include_lane)
         include_intersection_boundary = True if (not bool(args.include_lane) and not bool(args.include_intersection_boundary)) else bool(args.include_intersection_boundary)
     system_prompt = resolve_optional_text(inline_text=str(args.system_prompt), file_path=str(args.system_prompt_file), fallback=PATCH_ONLY_SYSTEM_PROMPT if bool(args.use_system_prompt) else "")
+    user_prompt_text = resolve_optional_text(inline_text=str(args.user_prompt), file_path=str(args.user_prompt_file), fallback=PATCH_ONLY_PROMPT_TEMPLATE)
     log_event("PatchOnly", f"start manifest={manifest_path} output_root={output_root} family_count={len(families)}")
     summary: Dict[str, object] = {
         "source_family_manifest": str(manifest_path),
         "output_root": str(output_root),
         "include_lane": bool(include_lane),
         "include_intersection_boundary": bool(include_intersection_boundary),
+        "user_prompt_template": user_prompt_text,
         "band_indices": [int(index) for index in args.band_indices],
         "splits": {},
     }
@@ -193,6 +197,7 @@ def main() -> None:
             empty_patch_drop_ratio=float(args.empty_patch_drop_ratio),
             empty_patch_seed=int(args.empty_patch_seed),
             system_prompt=system_prompt,
+            user_prompt_text=user_prompt_text,
         )
         split_info = summary["splits"][split]
         log_event("PatchOnly", f"split={split} summary families={split_info['families']} samples={split_info['samples']}")

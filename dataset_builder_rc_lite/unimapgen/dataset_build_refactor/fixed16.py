@@ -22,8 +22,7 @@ from .viz import draw_endpoint
 
 
 FIXED16_PROMPT_TEMPLATE = """<image>
-Please construct the road map from ({start_x},{start_y}) to ({end_x},{end_y}) in the satellite image.
-Only predict road segments inside the target box [{box_x_min},{box_y_min},{box_x_max},{box_y_max}].
+Reconstruct the road-structure line map inside target box [{box_x_min},{box_y_min},{box_x_max},{box_y_max}].
 Keep all coordinates in the patch-local coordinate system."""
 
 
@@ -125,8 +124,13 @@ def build_target_lines_for_box(full_patch_target_lines: Sequence[Dict], target_b
     return sort_lines(output)
 
 
-def format_fixed16_prompt(prompt_fields: Dict[str, int]) -> str:
-    return FIXED16_PROMPT_TEMPLATE.format(**prompt_fields)
+def format_fixed16_prompt(prompt_fields: Dict[str, int], prompt_template: str = "") -> str:
+    template = str(prompt_template).strip() or FIXED16_PROMPT_TEMPLATE
+    try:
+        return template.format(**prompt_fields)
+    except KeyError as exc:
+        missing_key = str(exc).strip("'\"")
+        raise ValueError(f"Fixed16 prompt template contains an unknown placeholder: {missing_key}") from exc
 
 
 def save_fixed16_visualization(*, patch_image: Image.Image, target_lines: Sequence[Dict], target_box: Dict[str, int], anchor_piece_points: Sequence[Sequence[int]], out_path: Path) -> None:

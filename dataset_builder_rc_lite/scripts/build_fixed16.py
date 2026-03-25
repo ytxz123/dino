@@ -15,7 +15,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from unimapgen.dataset_build_refactor.common import build_sharegpt_dataset_info, ensure_dir, extract_message_content, format_progress, link_or_copy_images, load_jsonl, log_event, require_existing_path, validate_ratio, make_sharegpt_record
+from unimapgen.dataset_build_refactor.common import build_sharegpt_dataset_info, ensure_dir, extract_message_content, format_progress, link_or_copy_images, load_jsonl, log_event, require_existing_path, resolve_optional_text, validate_ratio, make_sharegpt_record
 from unimapgen.dataset_build_refactor.fixed16 import build_grid_boxes, build_prompt_endpoints, build_target_lines_for_box, format_fixed16_prompt
 
 
@@ -30,6 +30,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--resample-step-px", type=float, default=4.0)
     parser.add_argument("--boundary-tol-px", type=float, default=2.5)
     parser.add_argument("--use-system-prompt-from-source", action="store_true")
+    parser.add_argument("--user-prompt", type=str, default="")
+    parser.add_argument("--user-prompt-file", type=str, default="")
     parser.add_argument("--image-root-mode", type=str, default="symlink", choices=["symlink", "copy", "none"])
     return parser.parse_args()
 
@@ -95,7 +97,7 @@ def build_fixed16_meta_row(*, row_id: str, source_meta: Dict, box: Dict[str, int
     }
 
 
-def build_split(*, split: str, input_root: Path, output_root: Path, grid_size: int, target_empty_ratio: float, rng: random.Random, boundary_tol_px: float, resample_step_px: float, reuse_system_prompt: bool) -> Dict[str, object]:
+def build_split(*, split: str, input_root: Path, output_root: Path, grid_size: int, target_empty_ratio: float, rng: random.Random, boundary_tol_px: float, resample_step_px: float, reuse_system_prompt: bool, user_prompt_template: str) -> Dict[str, object]:
     split_jsonl = input_root / f"{split}.jsonl"
     split_meta_jsonl = input_root / f"meta_{split}.jsonl"
     if not split_jsonl.exists() or not split_meta_jsonl.exists():
@@ -153,7 +155,7 @@ def build_split(*, split: str, input_root: Path, output_root: Path, grid_size: i
                         "box_y_min": int(box["y_min"]),
                         "box_x_max": int(box["x_max"]),
                         "box_y_max": int(box["y_max"]),
-                    })
+                    }, prompt_template=user_prompt_template)
                     new_row_id = f"{row_id}_g{int(box['grid_row'])}{int(box['grid_col'])}"
                     row = build_fixed16_record(sample_id=new_row_id, image_rel_path=image_rel_path, prompt_text=prompt_text, target_lines=target_lines, system_prompt=system_prompt)
                     meta = build_fixed16_meta_row(row_id=new_row_id, source_meta=src_meta, box=box, prompt_info=prompt_info, prompt_text=prompt_text, target_lines=target_lines, grid_size=grid_size, resample_step_px=resample_step_px, system_prompt=system_prompt)
@@ -202,6 +204,7 @@ def main() -> None:
     output_root = args.output_root.resolve()
     ensure_dir(output_root)
     image_mode = link_or_copy_images(input_root=input_root, output_root=output_root, mode=str(args.image_root_mode))
+    user_prompt_template = resolve_optional_text(inline_text=str(args.user_prompt), file_path=str(args.user_prompt_file))
     rng = random.Random(int(args.seed))
     log_event("Fixed16", f"start input_root={input_root} output_root={output_root} grid_size={args.grid_size}")
     summary: Dict[str, object] = {
@@ -212,11 +215,12 @@ def main() -> None:
         "target_empty_ratio": float(args.target_empty_ratio),
         "seed": int(args.seed),
         "image_root_mode": image_mode,
+        "user_prompt_template": user_prompt_template,
         "splits": {},
     }
     splits = [str(item) for item in args.splits]
     for split in splits:
-        summary["splits"][split] = build_split(split=split, input_root=input_root, output_root=output_root, grid_size=int(args.grid_size), target_empty_ratio=float(args.target_empty_ratio), rng=rng, boundary_tol_px=float(args.boundary_tol_px), resample_step_px=float(args.resample_step_px), reuse_system_prompt=bool(args.use_system_prompt_from_source))
+        summary["splits"][split] = build_split(split=split, input_root=input_root, output_root=output_root, grid_size=int(args.grid_size), target_empty_ratio=float(args.target_empty_ratio), rng=rng, boundary_tol_px=float(args.boundary_tol_px), resample_step_px=float(args.resample_step_px), reuse_system_prompt=bool(args.use_system_prompt_from_source), user_prompt_template=user_prompt_template)
         log_event("Fixed16", f"split={split} summary={summary['splits'][split]}")
     (output_root / "dataset_info.json").write_text(json.dumps(build_sharegpt_dataset_info(output_root=output_root, splits=splits), ensure_ascii=False, indent=2), encoding="utf-8")
     (output_root / "build_summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
