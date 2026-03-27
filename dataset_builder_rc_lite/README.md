@@ -191,24 +191,26 @@ dataset_builder_rc_lite/
 1. patch_only
 
 - 输入：整张 satellite patch。
-- 目标：重建当前 patch 内完整的 road-structure map。
+- 目标：重建当前 patch 内全部可见的车道中心线。
 - 输出范围：整个 patch。
-- 适合做全图重建或粗阶段建图。
+- 不需要输出 intersection polygon 或其他附加结构。
+- 适合做全图级车道中心线重建。
 
 2. fixed16
 
 - 输入：整张 satellite patch，加一个 target box。
-- 目标：利用整张图的上下文，只重建 target box 内的 road-structure geometry。
+- 目标：利用整张图的上下文，只重建 target box 内的车道中心线。
 - 输出范围：严格限制在 target box 内。
-- 适合做局部细化或分块建图。
+- 不需要输出 intersection polygon 或其他附加结构。
+- 适合做局部细化或分块级车道中心线重建。
 
 3. stageb
 
 - 默认模式是 no-state。
 - 输入：整张 satellite patch，加一个 target box。
-- 目标：与 fixed16 类似，只重建 target box 内的 geometry。
+- 目标：与 fixed16 类似，只重建 target box 内的车道中心线。
 - 输出范围：严格限制在 target box 内。
-- 当 stageb_state_mode=gt 时，会额外提供来自邻块的 trace hints，用于跨块道路续接。
+- 当 stageb_state_mode=gt 时，会额外提供来自邻块的 trace hints，用于跨块车道中心线续接。
 
 ## 运行方法
 
@@ -334,15 +336,17 @@ dataset_builder_rc_lite_output/
 
 ```text
 <image>
-Task: reconstruct the road-structure map inside target box [{box_x_min},{box_y_min},{box_x_max},{box_y_max}].
-You may use the full satellite patch as visual context, but only return geometry that belongs to the target box.
+Role: lane centerline reconstruction model.
+Task: reconstruct the lane centerlines inside target box [{box_x_min},{box_y_min},{box_x_max},{box_y_max}].
+You may use the full satellite patch as visual context, but return only lane centerlines that belong to the target box.
 Keep all coordinates in the patch-local coordinate system.
 ```
 
 ```text
 <image>
-Task: reconstruct the road-structure map inside target box [{box_x_min},{box_y_min},{box_x_max},{box_y_max}].
-You may use the full satellite patch as visual context, but only return geometry that belongs to the target box.
+Role: lane centerline reconstruction model.
+Task: reconstruct the lane centerlines inside target box [{box_x_min},{box_y_min},{box_x_max},{box_y_max}].
+You may use the full satellite patch as visual context, but return only lane centerlines that belong to the target box.
 Keep all coordinates in the patch-local coordinate system.
 ```
 

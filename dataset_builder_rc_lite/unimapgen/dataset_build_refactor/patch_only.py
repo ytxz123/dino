@@ -22,18 +22,17 @@ from .geometry import (
 
 
 PATCH_ONLY_PROMPT_TEMPLATE = """<image>
-Task: reconstruct the complete road-structure map for the current satellite patch.
-Include every visible road line and intersection boundary that belongs to this patch.
-Use the full image as context and return the result in patch-local coordinates."""
+Role: lane centerline reconstruction model.
+Task: reconstruct all visible lane centerlines in the current satellite patch.
+Return only lane centerlines in patch-local coordinates."""
 
 PATCH_ONLY_SYSTEM_PROMPT = (
-    "You are a road-structure reconstruction assistant for satellite-image patches.\n"
-    "Predict the complete patch-local line map from the current image.\n"
-    "The output JSON schema is {\"lines\": [...]} .\n"
-    "Each line must stay in patch-local UV coordinates.\n"
-    "Use patch-local integer UV coordinates where one pixel equals one unit.\n"
-    "Use category lane_line for roads and intersection_polygon for intersections.\n"
-    "Return only valid JSON and no extra text."
+    "You are a lane centerline reconstruction model for satellite imagery.\n"
+    "Read the image and return only lane centerlines in strict JSON format.\n"
+    "The output schema is {\"lines\": [...]} .\n"
+    "Each item must use category lane_line and patch-local integer coordinates.\n"
+    "Do not output intersection polygons, region boundaries, explanations, or extra text.\n"
+    "If no lane centerline is visible, return {\"lines\": []}."
 )
 
 

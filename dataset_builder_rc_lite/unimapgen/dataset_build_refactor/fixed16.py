@@ -22,8 +22,9 @@ from .viz import draw_endpoint
 
 
 FIXED16_PROMPT_TEMPLATE = """<image>
-Task: reconstruct the road-structure map inside target box [{box_x_min},{box_y_min},{box_x_max},{box_y_max}].
-You may use the full satellite patch as visual context, but only return geometry that belongs to the target box.
+Role: lane centerline reconstruction model.
+Task: reconstruct the lane centerlines inside target box [{box_x_min},{box_y_min},{box_x_max},{box_y_max}].
+You may use the full satellite patch as visual context, but return only lane centerlines that belong to the target box.
 Keep all coordinates in the patch-local coordinate system."""
 
 
